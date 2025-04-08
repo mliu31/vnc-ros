@@ -110,10 +110,8 @@ class RandomWalk(Node):
 
             ####### TODO: ANSWER CODE BEGIN #######
             # angles relative to LaserScanner ref frame
-            start_scan_angle = -math.pi - self.scan_angle[0] # -pi/2 
-            end_scan_angle = math.pi - self.scan_angle[1] # pi/2 
-
-            print(start_scan_angle, end_scan_angle)
+            start_scan_angle = -math.pi - self.scan_angle[0] 
+            end_scan_angle = math.pi - self.scan_angle[1] 
 
             # angular difference between LaserScanner angle_min and start_scan_angle
             # and between LaserScanner angle_max and end_scan_angle
@@ -121,7 +119,7 @@ class RandomWalk(Node):
             end_diff = msg.angle_max - end_scan_angle
 
             if start_diff < 0 and end_diff < 0: # no valid angles in ranges array
-                print("   invalid scanning angles, no distances checked")
+                print("      invalid scanning angles, no distances checked")
                 return
             
             minidx = int((start_diff) / msg.angle_increment)
@@ -131,7 +129,7 @@ class RandomWalk(Node):
         
             if mindist < MIN_THRESHOLD_DISTANCE: 
                 self._close_obstacle = True 
-                print("      found obstacle; set flag to true")
+                print("      found obstacle")
             ####### ANSWER CODE END #######
 
     def spin(self):
@@ -173,8 +171,6 @@ class RandomWalk(Node):
                     else: 
                         self.move(0.0, self.angular_velocity)  # clockwise
                 
-                print("sleeping ---------------------------------------------------------------------------------------------------------------")
-                time.sleep(10)
                 self._close_obstacle = False 
             ####### ANSWER CODE END #######
 
