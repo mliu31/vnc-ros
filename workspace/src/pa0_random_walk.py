@@ -39,8 +39,8 @@ ANGULAR_VELOCITY = math.pi # rad/s
 MIN_THRESHOLD_DISTANCE = 0.3 # m, threshold distance, should be smaller than range_max
 
 # Field of view in radians that is checked in front of the robot (TODO: feel free to tune)
-# MIN_SCAN_ANGLE_RAD = -10.0 / 180 * math.pi
-# MAX_SCAN_ANGLE_RAD = +10.0 / 180 * math.pi
+MIN_SCAN_ANGLE_RAD = -10.0 / 180 * math.pi
+MAX_SCAN_ANGLE_RAD = +10.0 / 180 * math.pi
 
 USE_SIM_TIME = True
 
