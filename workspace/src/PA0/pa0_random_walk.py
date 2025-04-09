@@ -6,7 +6,6 @@
 # Instructor: Alberto Quattrini Li
 # Term: Spring 2025 (4/4/2025)
 # Assignment: PA0 - Random Walk
-# Description: This code implements a random walk behavior for a robot using ROS2. The robot moves forward until it detects an obstacle within a certain distance, at which point it rotates a random angle [-pi, pi]  before continuing to move forward.
 
 # Import of python modules.
 import math # use of pi.
@@ -36,7 +35,7 @@ LINEAR_VELOCITY = 0.3 # m/s
 ANGULAR_VELOCITY = math.pi # rad/s
 
 # Threshold of minimum clearance distance (TODO: feel free to tune)
-MIN_THRESHOLD_DISTANCE = 0.3 # m, threshold distance, should be smaller than range_max
+MIN_THRESHOLD_DISTANCE = 0.1 # m, threshold distance, should be smaller than range_max
 
 # Field of view in radians that is checked in front of the robot (TODO: feel free to tune)
 MIN_SCAN_ANGLE_RAD = -10.0 / 180 * math.pi
@@ -92,7 +91,7 @@ class RandomWalk(Node):
         self._cmd_pub.publish(twist_msg)
 
     def _laser_callback(self, msg):
-        print("[LASER] flag: ", self._close_obstacle)
+        self.get_logger().info("[LASER] flag: {self._close_obstacle}")
 
         """Processing of laser message."""
         # Access to the index of the measurement in front of the robot.
@@ -102,7 +101,7 @@ class RandomWalk(Node):
         #       ...
 
         if not self._close_obstacle:
-            print("   checking for obstacles")
+            self.get_logger().info("   checking for obstacles")
             # Find the minimum range value between min_scan_angle and max_scan_angle
             # If the minimum range value found is closer to min_threshold_distance, change the flag self._close_obstacle
             # Note: You have to find the min index and max index.
@@ -118,23 +117,29 @@ class RandomWalk(Node):
             start_diff = start_scan_angle - msg.angle_min
             end_diff = msg.angle_max - end_scan_angle
 
-            if start_diff < 0 and end_diff < 0: # no valid angles in ranges array
-                print("      invalid scanning angles, no distances checked")
+            if start_diff < 0 and end_diff < 0: # no valid angles in ranges
+                self.get_logger().info("      invalid scanning angles, no distances checked")
                 return
-            
-            minidx = int((start_diff) / msg.angle_increment)
-            maxidx = int((end_diff) / msg.angle_increment)
+            elif start_diff < 0: # only angles at end of ranges are valid 
+                minidx = 0 
+                maxidx = int((end_diff) / msg.angle_increment)
+            elif end_diff < 0: # only angles at start of ranges are valid 
+                minidx = int((start_diff) / msg.angle_increment)
+                maxidx = len(msg.ranges) - 1
+            else:  # valid angles at start and end of ranges 
+                minidx = int((start_diff) / msg.angle_increment)
+                maxidx = int((end_diff) / msg.angle_increment)
 
             mindist = min(msg.ranges[:minidx] + msg.ranges[-maxidx:])
         
-            if mindist < MIN_THRESHOLD_DISTANCE: 
+            if mindist < self.min_threshold_distance: 
                 self._close_obstacle = True 
-                print("      found obstacle")
+                self.get_logger().info("      found obstacle at distance {mindist} m")
             ####### ANSWER CODE END #######
 
     def spin(self):
         while rclpy.ok():
-            print("[SPIN] flag: ", self._close_obstacle)
+            self.get_logger().info(f"[SPIN] flag: {self._close_obstacle}")
 
             # Keep looping until user presses Ctrl+C
             
@@ -147,13 +152,12 @@ class RandomWalk(Node):
             ####### TODO: ANSWER CODE BEGIN #######
             if self._close_obstacle == False: 
                 self.move(self.linear_velocity, 0.0)
-
-                print("   no obstacle, moving forward")
+                self.get_logger().info("   no obstacle, moving forward")
             else: 
                 
                 rand_ang = random.uniform(-math.pi, math.pi)
-                print("   obstacle detected! rotating ", rand_ang, " rad; set flag to false")
-                secs = abs(rand_ang) / ANGULAR_VELOCITY
+                self.get_logger().info(f"   obstacle detected! rotating {rand_ang} rad; set flag to false")
+                secs = abs(rand_ang) / self.angular_velocity
                 duration = Duration(seconds=secs)
                 start_time = self.get_clock().now()
 
