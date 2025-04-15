@@ -62,7 +62,7 @@ class Test(Node):
         quaternion = tf_msg.transform.rotation
         rpy = tf_transformations.euler_from_quaternion([quaternion.x, quaternion.y, quaternion.z, quaternion.w])
 
-        # TODO: transform lidar points in base_link
+        # TODO: transform lidar points in base_link to laser_link frame.
         # perform matrix mult based on euler angles 
         def rotation_x(roll): 
             return np.array([
@@ -110,9 +110,9 @@ class Test(Node):
         l_T_bl = inverse_T(bl_T_l)
 
         # Equivalent code
-        # t = tf_transformations.translation_matrix([translation.x, translation.y, translation.z])
-        # R = tf_transformations.quaternion_matrix([quaternion.x, quaternion.y, quaternion.z, quaternion.w])
-        # bl_T2_l = t.dot(R)
+        t = tf_transformations.translation_matrix([translation.x, translation.y, translation.z])
+        R = tf_transformations.quaternion_matrix([quaternion.x, quaternion.y, quaternion.z, quaternion.w])
+        bl_T2_l = t.dot(R)
         ##
 
         self.get_logger().info(f'got: {tf_msg}\n{[roll, pitch, yaw]}\n{R}\n{bl_R_bll}\n{bl_T_l}\n{bl_T2_l}\n{l_T_bl}')
