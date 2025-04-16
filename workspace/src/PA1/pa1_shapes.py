@@ -27,8 +27,11 @@ from tf2_ros import TransformException
 DEFAULT_CMD_VEL_TOPIC = 'cmd_vel'
 DEFAULT_SCAN_TOPIC = 'scan' # name of topic for Stage simulator. For Gazebo, 'scan'
 
+TF_BASE_LINK = 'base_link'
+TF_ODOM = 'odom'
+
 # Frequency at which the loop operates
-FREQUENCY = 10 #Hz.
+FREQUENCY = 1 #Hz.
 
 # Velocities that will be used 
 LINEAR_VELOCITY = 0.2 # m/s
@@ -110,7 +113,7 @@ class ShapeDraw(Node):
                 self.move(0.0, -self.angular_velocity)  # clockwise
 
     # distance in m 
-    def move_forward(self, distance): 
+    def translate(self, distance): 
         print(f"   Moving forward {distance}m")
         
         secs = abs(distance) / self.linear_velocity
@@ -134,7 +137,7 @@ class ShapeDraw(Node):
         self.rotate(math.pi/2)
 
         # # move forward r
-        self.move_forward(r)
+        self.translate(r)
 
         # rotate supplement of θ_1 (angle in top left corner)
         θ_1 = math.atan(r/math.sqrt(2) / (r-(r/math.sqrt(2))))
@@ -143,40 +146,38 @@ class ShapeDraw(Node):
         
         # move forward hypotenuse 
         hypotenuse = math.sqrt((r/math.sqrt(2))**2 + (r-(r/math.sqrt(2)))**2)
-        self.move_forward(hypotenuse)
+        self.translate(hypotenuse)
 
         # rotate θ_1 (corresponding angles)
         self.rotate(-θ_1)
 
         # short side of trapezoid 
         short_side = 2 * r/math.sqrt(2)
-        self.move_forward(short_side)
+        self.translate(short_side)
 
         # rotate θ_1 
         self.rotate(-θ_1)
 
         # move forward hypotenuse 
-        self.move_forward(hypotenuse)
+        self.translate(hypotenuse)
 
         # rotate θ_1_supp
         self.rotate(-θ_1_supp)
 
         # move forward r
-        self.move_forward(r)
+        self.translate(r)
 
     def semicircle(self, r): 
         rclpy.spin_once(self)
         print(f"   Creating semicircle of radius {r}m")
         
-        # θ = ωΔt =>  Δt = θ/ω
-        secs = math.pi / self.angular_velocity 
+        # l = vΔt =>  Δt = θ/ω
+        secs = math.pi * r / self.linear_velocity 
         duration = Duration(seconds=secs)
         start_time = self.get_clock().now()
 
-        # r = l/θ = vΔt/ωΔt =>   v = rω
-        v = r * self.angular_velocity
-
-        print("r: ", r, "v: ", v, "w: ", -self.angular_velocity, "secs: ", secs)
+        # r = l/θ = vΔt/ωΔt => ω = v/r
+        w = self.linear_velocity / r
 
         # rotate for certain duration 
         while rclpy.ok():
@@ -189,14 +190,8 @@ class ShapeDraw(Node):
                 break
             
             # Publish the twist message continuously.
-            # self.move(v, -self.angular_velocity)
+            self.move(self.linear_velocity, -w)
             # self.move(v, 0.0) 
-
-            twist_msg = Twist()
-
-            twist_msg.linear.x = v
-            twist_msg.angular.z = 100000.0
-            self._cmd_pub.publish(twist_msg)
 
     def D(self, r): 
         self.get_logger().info(f"D")
@@ -204,7 +199,7 @@ class ShapeDraw(Node):
         self.rotate(math.pi/2)
         
         # move forward r 
-        self.move_forward(r)
+        self.translate(r)
         # rotate -π/4 radians
         self.rotate(-math.pi/2)
 
@@ -215,16 +210,28 @@ class ShapeDraw(Node):
         self.rotate(-math.pi/2)
 
         # move forward r 
-        self.move_forward(r)
+        self.translate(r)
 
-    def polygon(self, coords): 
+    def polygon(self, odom_coords): 
         self.get_logger().info(f"Polygon")
 
-        print(coords)
+        print(odom_coords)
+        
+        # get transformation matrix from odom to base_link rf
+        try:
+            tf_msg = self.tf_buffer.lookup_transform(TF_BASE_LINK, TF_LASER_LINK, laserscan_msg.header.stamp)
+        except TransformException as ex:
+            self.get_logger().info(
+                f'Could not transform: {ex}')
+            return
+        self.get_logger().info(
+                f'got: {tf_msg}')
+        translation = tf_msg.transform.translation
+        quaternion = tf_msg.transform.rotation
 
-        # transform coords from odom to base_link rf
         
 
+        bl_coords = [] 
 
     def spin(self):
         while rclpy.ok(): 
@@ -234,9 +241,14 @@ class ShapeDraw(Node):
             # if user presses 1, ask for r then draw 
             # if user presses 2, ask for r then draw 
             # if user presses 3, ask for (x,y) points and enter after each point (once done, press enter) then draw  
-
+            
+            
             rclpy.spin_once(self)
-            self.semicircle(2)
+       
+            self.D(2)
+
+            # coords = [[1, 0], [1, 1], [0, 1]]
+            # self.polygon(coords)
 
             """response = input("What kind of shape do you want to draw?  \n(1) isolesces trapezoid, \n(2) D, \n(3) polygon \n(type 1, 2, or 3)\n")
         
