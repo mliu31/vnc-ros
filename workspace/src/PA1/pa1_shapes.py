@@ -22,6 +22,9 @@ from rclpy.duration import Duration # message type for duration
 import tf2_ros # library for transformations.
 from tf2_ros import TransformException
 
+import tf_transformations
+import numpy as np
+
 # Constants.
 # Topic names
 DEFAULT_CMD_VEL_TOPIC = 'cmd_vel'
@@ -219,7 +222,7 @@ class ShapeDraw(Node):
         
         # get transformation matrix from odom to base_link rf
         try:
-            tf_msg = self.tf_buffer.lookup_transform(TF_BASE_LINK, TF_LASER_LINK, laserscan_msg.header.stamp)
+            tf_msg = self.tf_buffer.lookup_transform(TF_BASE_LINK, TF_ODOM,  rclpy.time.Time())
         except TransformException as ex:
             self.get_logger().info(
                 f'Could not transform: {ex}')
@@ -229,9 +232,29 @@ class ShapeDraw(Node):
         translation = tf_msg.transform.translation
         quaternion = tf_msg.transform.rotation
 
-        
+        t = tf_transformations.translation_matrix([translation.x, translation.y, translation.z])
+        R = tf_transformations.quaternion_matrix([quaternion.x, quaternion.y, quaternion.z, quaternion.w])
+        bl_T2_odom = t.dot(R)
 
-        bl_coords = [] 
+        rpy = tf_transformations.euler_from_quaternion([quaternion.x, quaternion.y, quaternion.z, quaternion.w])
+        roll = rpy[0]
+        pitch = rpy[1]
+        yaw = rpy[2]
+
+        self.get_logger().info(f'got: {tf_msg}\n{[roll, pitch, yaw]}\n{R}\n{bl_T2_odom}')
+
+        # apply transformation to coords 
+        bl_coords = []  
+        for i, coord in enumerate(odom_coords): 
+            x = coord[0]
+            y = coord[1]
+
+            odom_p = np.array([x, y, 0, 1])
+            bl_p = bl_T2_odom.dot(odom_p.transpose())
+
+            bl_coords.append([bl_p[0], bl_p[1]])
+
+        print(bl_coords)
 
     def spin(self):
         while rclpy.ok(): 
@@ -245,10 +268,10 @@ class ShapeDraw(Node):
             
             rclpy.spin_once(self)
        
-            self.D(2)
+            # self.D(2)
 
-            # coords = [[1, 0], [1, 1], [0, 1]]
-            # self.polygon(coords)
+            coords = [[1, 0], [1, 1], [0, 1]]
+            self.polygon(coords)
 
             """response = input("What kind of shape do you want to draw?  \n(1) isolesces trapezoid, \n(2) D, \n(3) polygon \n(type 1, 2, or 3)\n")
         
