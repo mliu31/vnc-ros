@@ -139,7 +139,7 @@ class ShapeDraw(Node):
         # rotate π/4 radians - trapezoid is perpendicular to base link rf 
         self.rotate(math.pi/2)
 
-        # # move forward r
+        # move forward r
         self.translate(r)
 
         # rotate supplement of θ_1 (angle in top left corner)
@@ -215,46 +215,140 @@ class ShapeDraw(Node):
         # move forward r 
         self.translate(r)
 
-    def polygon(self, odom_coords): 
-        self.get_logger().info(f"Polygon")
-
-        print(odom_coords)
-        
-        # get transformation matrix from odom to base_link rf
+    def get_transformation(self, start_frame, target_frame):
+        """Get transformation between two frames."""
         try:
-            tf_msg = self.tf_buffer.lookup_transform(TF_BASE_LINK, TF_ODOM,  rclpy.time.Time())
+            while not self.tf_buffer.can_transform(target_frame, start_frame, self.get_clock().now()):
+                rclpy.spin_once(self)
+            tf_msg = self.tf_buffer.lookup_transform(target_frame, start_frame, self.get_clock().now())
         except TransformException as ex:
             self.get_logger().info(
                 f'Could not transform: {ex}')
             return
-        self.get_logger().info(
-                f'got: {tf_msg}')
+        # self.get_logger().info(f'Received tf message: {tf_msg}')   
         translation = tf_msg.transform.translation
         quaternion = tf_msg.transform.rotation
 
         t = tf_transformations.translation_matrix([translation.x, translation.y, translation.z])
         R = tf_transformations.quaternion_matrix([quaternion.x, quaternion.y, quaternion.z, quaternion.w])
-        bl_T2_odom = t.dot(R)
+        T = t.dot(R)
+        T = np.round(T) # round to nearest int -- minimizes noise 
 
-        rpy = tf_transformations.euler_from_quaternion([quaternion.x, quaternion.y, quaternion.z, quaternion.w])
-        roll = rpy[0]
-        pitch = rpy[1]
-        yaw = rpy[2]
+        return T
+    
+    def get_angle(self, y, x):
+        theta = math.atan2(y, x)
 
-        self.get_logger().info(f'got: {tf_msg}\n{[roll, pitch, yaw]}\n{R}\n{bl_T2_odom}')
+        # edge cases for tan (multiples of π/2)
+        if x == 0:
+            if y > 0:
+                theta = math.pi/2
+            else:
+                theta = -math.pi/2
 
-        # apply transformation to coords 
-        bl_coords = []  
+        return theta 
+
+    # from (0, 0) to p (x, y) 
+    def get_distance(self, p):
+        return  math.sqrt((p[0])**2 + (p[1])**2)
+        
+    def reorder_points(self, coords, start_point): 
+        # reorder coords to make polygon
+        # clockwise sweep 
+        reordered = [] 
+        processed_coordidxs = set() 
+    
+        coords.append(start_point)
+        # print("coords: ", coords)
+
+        # sort x, y coords decreasing 
+        sorted_coords = sorted(coords, key=lambda c: (c[0], c[1]), reverse=True)
+        # print("sorted_coords: ", sorted_coords)
+
+        start_point_idx = 0 # track idx to make it last in coord list (returns to starting point after creating polygon)
+
+        reordered.append(sorted_coords[0])
+        i = 1
+        forward = True 
+        while len(reordered) != len(coords): 
+            if forward: 
+                # next coord with strictly smaller x, larger y
+                if reordered[-1][0] > sorted_coords[i][0] and reordered[-1][1] < sorted_coords[i][1] or i == len(sorted_coords) - 1:
+                    reordered.append(sorted_coords[i])
+                    processed_coordidxs.add(i)
+                    
+                    print(sorted_coords[i], start_point)
+                    if sorted_coords[i] == start_point: 
+                        start_point_idx = len(reordered) - 1
+                    
+                if i == len(sorted_coords) - 1: 
+                    forward = False
+                    i -= 1
+                else:   
+                    i += 1
+            else: # backward, next coord with larger x, smaller y (not strict)
+                if i not in processed_coordidxs: 
+                    reordered.append(sorted_coords[i])
+                    processed_coordidxs.add(i)
+
+                    if sorted_coords[i] == start_point: 
+                        start_point_idx = len(reordered) - 1
+                i -= 1
+
+        # make start point last 
+        # print(reordered, start_point_idx) 
+        reordered = reordered[start_point_idx+1:] + reordered[:start_point_idx+1]
+
+        # print(reordered)
+        return reordered
+    
+    # relative to odom rf
+    def get_currentloc(self):
+        odom_T2_bl = self.get_transformation(TF_BASE_LINK, TF_ODOM)
+
+        print("odom_T2_bl: \n", odom_T2_bl)
+        odom_p = np.array([0, 0, 0, 1])
+        odom_p = odom_T2_bl.dot(odom_p.transpose())
+
+        return odom_p[:2].tolist()
+    
+    def polygon(self, odom_coords): 
+        self.get_logger().info(f"Polygon")
+
+        print("odom coords: ", odom_coords)
+
+        curr_loc = self.get_currentloc() # relative to odom 
+
+        # reorder coords to make polygon 
+        odom_coords = self.reorder_points(odom_coords, curr_loc)
+        print()
+
         for i, coord in enumerate(odom_coords): 
-            x = coord[0]
-            y = coord[1]
+            print("  processing coord: ", coord)
 
+            # get transformation matrix from odom to current base_link rf
+            bl_T2_odom = self.get_transformation(TF_ODOM, TF_BASE_LINK)
+            print("      bl_T_od: \n", bl_T2_odom)
+
+            x, y = coord
+
+            # apply transformation  
             odom_p = np.array([x, y, 0, 1])
             bl_p = bl_T2_odom.dot(odom_p.transpose())
 
-            bl_coords.append([bl_p[0], bl_p[1]])
+            print("      odom p: ", odom_p)
+            print("      bl p: ", bl_p)
 
-        print(bl_coords)
+            # rotate to point
+            theta = self.get_angle(bl_p[1], bl_p[0])
+            print("      theta: ", theta * 180/math.pi)
+            # move to point
+
+            dist = self.get_distance(bl_p)
+            print("      dist: ", dist)
+
+            self.rotate(theta)
+            self.translate(dist)
 
     def spin(self):
         while rclpy.ok(): 
@@ -265,15 +359,7 @@ class ShapeDraw(Node):
             # if user presses 2, ask for r then draw 
             # if user presses 3, ask for (x,y) points and enter after each point (once done, press enter) then draw  
             
-            
-            rclpy.spin_once(self)
-       
-            # self.D(2)
-
-            coords = [[1, 0], [1, 1], [0, 1]]
-            self.polygon(coords)
-
-            """response = input("What kind of shape do you want to draw?  \n(1) isolesces trapezoid, \n(2) D, \n(3) polygon \n(type 1, 2, or 3)\n")
+            response = input("What kind of shape do you want to draw?  \n(1) isolesces trapezoid, \n(2) D, \n(3) polygon \n(type 1, 2, or 3)\n")
         
             while response != "1" and response != "2" and response != "3":
                 response = input("Invalid response. Type 1, 2, or 3 for... \n(1) isolesces trapezoid, \n(2) D, \n(3) polygon\n")
@@ -304,15 +390,16 @@ class ShapeDraw(Node):
                         if coord.count(",") != 1 or not coord.split(",")[0].isnumeric() or not coord.split(",")[1].isnumeric(): 
                             coord = input("Invalid response. Try again...\n")
 
+                        x,y = float(coord.split(",")[0]), float(coord.split(",")[1])
+                        if [x,y] in coords: 
+                            coord = input("Coordinate already exists. Try again...\n")
+
                         else:
-                            coords.append([float(coord.split(",")[0]), float(coord.split(",")[1])])
+                            coords.append([x,y])
                             coord = input("Enter next coordinate or press enter to finish: ")
                             
                     rclpy.spin_once(self)
-                    self.polygon(coords)"""
-
-       
-            break 
+                    self.polygon(coords)
 
             ####### ANSWER CODE END #######
 
