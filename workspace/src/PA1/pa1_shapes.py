@@ -232,7 +232,7 @@ class ShapeDraw(Node):
         t = tf_transformations.translation_matrix([translation.x, translation.y, translation.z])
         R = tf_transformations.quaternion_matrix([quaternion.x, quaternion.y, quaternion.z, quaternion.w])
         T = t.dot(R)
-        T = np.round(T) # round to nearest int -- minimizes noise 
+        T = np.round(T, decimals=1) # rounding minimizes noise 
 
         return T
     
@@ -259,11 +259,9 @@ class ShapeDraw(Node):
         processed_coordidxs = set() 
     
         coords.append(start_point)
-        # print("coords: ", coords)
 
         # sort x, y coords decreasing 
         sorted_coords = sorted(coords, key=lambda c: (c[0], c[1]), reverse=True)
-        # print("sorted_coords: ", sorted_coords)
 
         start_point_idx = 0 # track idx to make it last in coord list (returns to starting point after creating polygon)
 
@@ -296,10 +294,8 @@ class ShapeDraw(Node):
                 i -= 1
 
         # make start point last 
-        # print(reordered, start_point_idx) 
         reordered = reordered[start_point_idx+1:] + reordered[:start_point_idx+1]
 
-        # print(reordered)
         return reordered
     
     # relative to odom rf
@@ -315,14 +311,14 @@ class ShapeDraw(Node):
     def polygon(self, odom_coords): 
         self.get_logger().info(f"Polygon")
 
-        print("odom coords: ", odom_coords)
+        print("inputted odom coords: ", odom_coords)
 
         curr_loc = self.get_currentloc() # relative to odom 
 
         # reorder coords to make polygon 
         odom_coords = self.reorder_points(odom_coords, curr_loc)
-        print()
-
+        print("reordered odom coords: ", odom_coords)
+        
         for i, coord in enumerate(odom_coords): 
             print("  processing coord: ", coord)
 
@@ -375,7 +371,7 @@ class ShapeDraw(Node):
                     self.trapezoid(float(r))
 
                 case "2":
-                    r = input("Enter the radius of the isosceles trapezoid: ")     
+                    r = input("Enter the radius of the D: ")     
 
                     while not r.isnumeric():  
                         r = input("Invalid response. Try again...\n")
@@ -387,16 +383,26 @@ class ShapeDraw(Node):
                     coord = input("Enter the coordinates of the vertices of polygon (relative to odom rf) in the form of x,y (no space between) and press enter after each point. e.g., 1,3\nWhen done entering, press enter.\n")
                 
                     while coord != "": 
-                        if coord.count(",") != 1 or not coord.split(",")[0].isnumeric() or not coord.split(",")[1].isnumeric(): 
+                        has_comma = coord.count(",") == 1
+                        
+                        if has_comma: 
+                            x = coord.split(",")[0]
+                            y = coord.split(",")[1]
+                            # if x and y are both numeric or if they are both negative numeric
+                            has_numeric = (x.isnumeric() or (x[1:].isnumeric() and x[0] == "-") and (y.isnumeric() or (y[1:].isnumeric() and y[0] == "-")))
+                    
+                            if not has_comma and not has_numeric:  
+                                coord = input("Invalid response. Try again...\n")
+
+                            x,y = float(x), float(y)
+                            if [x,y] in coords: 
+                                coord = input("Coordinate already exists. Try again...\n")
+
+                            else:
+                                coords.append([x,y])
+                                coord = input("Enter next coordinate or press enter to finish: ")
+                        else: 
                             coord = input("Invalid response. Try again...\n")
-
-                        x,y = float(coord.split(",")[0]), float(coord.split(",")[1])
-                        if [x,y] in coords: 
-                            coord = input("Coordinate already exists. Try again...\n")
-
-                        else:
-                            coords.append([x,y])
-                            coord = input("Enter next coordinate or press enter to finish: ")
                             
                     rclpy.spin_once(self)
                     self.polygon(coords)
