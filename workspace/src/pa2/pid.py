@@ -45,24 +45,13 @@ class PID:
         :returns: You should restrict your output to be between 1100 and 1900. This is a PWM command, which will be
                   sent to the SkyLine's throttle channel
         """
-        # TODO
         uk = 0 
         self.error_history += err
         integral = self.ki * self.error_history * dt
         derivative = (self.kd * (err - self.prev_err) / dt) 
 
         if self.prev_err: 
-            uk = self.kp + err + self.k + integral + derivative
+            uk = self.kp * err + self.k + integral + derivative
 
         self.prev_err = err 
-        print(uk)
         return uk 
-
-    def reset(self):
-        """
-        This method will get called when the simulation is reset (by pressing 'r') or when the real drone transitions
-        from armed mode to flying mode. You will want to reset the PID terms so that previously stored values will
-        not affect the current calculations (think about what this entails)!
-        """
-        # TODO
-        pass

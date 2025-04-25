@@ -31,14 +31,11 @@ DEFAULT_SERVICE_NAME = 'on_off'
 
 # Frequency at which the loop operates
 FREQUENCY = 10 #Hz.
-DT = 1/FREQUENCY # seconds
+# DT = 1/FREQUENCY # seconds
 
 # Velocities that will be used (TODO: feel free to tune)
-LINEAR_VELOCITY = 1.0 # m/s
-ANGULAR_VELOCITY = math.pi/4 # rad/s
-
-# Threshold of minimum clearance distance (TODO: feel free to tune)
-MIN_THRESHOLD_DISTANCE = 0.5 # m, threshold distance, should be smaller than range_max
+LINEAR_VELOCITY = 0.5 # m/s
+MAX_ANGULAR = 7 # rad/s
 
 # Field of view in radians that is checked in front of the robot (TODO: feel free to tune)
 # Note: these angles are with respect to the robot perspective, but needs to be
@@ -49,20 +46,19 @@ MAX_SCAN_ANGLE_RAD = 0 + LASER_ROBOT_OFFSET
 
 USE_SIM_TIME = True
 
-KP = 1
-KI = 0 
-KD = 0 
+KP = 0.2
+KI = 0
+KD = 0.4
 K = 0 
+distance = 2
 
 class fsm(Enum):
-    WAITING_FOR_LASER = 0
-    MOVE_FORWARD = 1
-    ROTATE_CALC = 2
-    ROTATE = 3
-    STOP = 4
+    PID_CALC = 1
+    MOVE = 2
+    STOP = 3
 
 class WallFollow(Node):
-    def __init__(self, distance, linear_velocity=LINEAR_VELOCITY, angular_velocity=ANGULAR_VELOCITY, min_threshold_distance=MIN_THRESHOLD_DISTANCE,
+    def __init__(self, distance, linear_velocity=LINEAR_VELOCITY, 
         scan_angle=[MIN_SCAN_ANGLE_RAD, MAX_SCAN_ANGLE_RAD],
         node_name="wall_follow", context=None):
         """Constructor."""
@@ -84,8 +80,7 @@ class WallFollow(Node):
 
         # Parameters.
         self.linear_velocity = linear_velocity # Constant linear velocity set.
-        self.angular_velocity = angular_velocity # Constant angular velocity set.
-        self.min_threshold_distance = min_threshold_distance
+        self.angular_velocity = 0 
         self.scan_angle = scan_angle
 
         # Rate at which to operate the while loop.
@@ -94,22 +89,47 @@ class WallFollow(Node):
         # setting up a service
         self._on_off_service = self.create_service(SetBool, f'{node_name}/{DEFAULT_SERVICE_NAME}', self._turn_on_off_callback)
 
-        # fsm variable.
-        self._fsm = fsm.STOP
+        # fsm variable
+        self._fsm = fsm.MOVE
 
+        # distance to wall 
         self.wall_distance = float(distance)
         self.current_distance = math.inf
-        self.pid = PID(self, KP, KI, KD, K)
 
-     
+        # pid 
+        self.pid = PID(KP, KI, KD, K)
+
+        # prev time for dt 
+        self.prev_time = 0 
+        self.curr_time = 0
+             
     def move(self, linear_vel, angular_vel):
         """Send a velocity command (linear vel in m/s, angular vel in rad/s)."""
         # Setting velocities.
         twist_msg = Twist()
 
-        twist_msg.linear.x = linear_vel
-        twist_msg.angular.z = angular_vel
+        twist_msg.linear.x = float(linear_vel)
+        twist_msg.angular.z = float(angular_vel)
         self._cmd_pub.publish(twist_msg)
+
+    def move_dt(self, linear_vel, angular_vel, dt): 
+        print(f"   Moving {linear_vel} m/s linear velocity, {angular_vel} rad/s angular velocity for ", dt, " seconds")
+
+        secs = dt
+        duration = Duration(seconds=secs)
+        start_time = self.get_clock().now()
+
+        # rotate for certain duration 
+        while rclpy.ok():
+            # print("rotating")
+            rclpy.spin_once(self)
+            # Log current time information.
+            
+            # Check if the specified duration has elapsed.
+            if self.get_clock().now() - start_time >= duration:
+                break
+            # Publish the twist message continuously.
+            self.move(linear_vel, angular_vel) 
 
     def stop(self):
         """Stop the robot."""
@@ -124,7 +144,7 @@ class WallFollow(Node):
             resp.message = "Robot stopped"
         else:
             if self._fsm == fsm.STOP:
-                self._fsm = fsm.WAITING_FOR_LASER
+                self._fsm = fsm.MOVE
                 resp.success = True
                 resp.message = "Robot activated"
             else:
@@ -133,15 +153,19 @@ class WallFollow(Node):
         
         return resp
 
+    # ensure val is between min and max
+    def clamp(self, val, min_val, max_val): 
+        return max(min_val, min(max_val, val))
+
     def _laser_callback(self, msg):
+        print("[LASER]")
         """Processing of laser message."""
         # Access to the index of the measurement in front of the robot.
         # NOTE: index 0 corresponds to min_angle, 
         #       index 1 corresponds to min_angle + angle_inc
         #       index 2 corresponds to min_angle + angle_inc * 2
         #       ...
-
-        if self._fsm == fsm.MOVE_FORWARD or self._fsm == fsm.WAITING_FOR_LASER:
+        if self._fsm == fsm.PID_CALC or self._fsm == fsm.MOVE:
             # Find the minimum range value between min_scan_angle and
             # max_scan_angle
             # If the minimum range value found is closer to min_threshold_distance, change the flag self._close_obstacle
@@ -158,50 +182,50 @@ class WallFollow(Node):
             min_index = int(((self.scan_angle[0]) - msg.angle_min) / msg.angle_increment)
             max_index = int(((self.scan_angle[1]) - msg.angle_min) / msg.angle_increment)
 
-            # print(f"{min_index} {max_index}")
+            rmin = math.inf
             for i in range(min_index, max_index+1):
-                if msg.range_min <= msg.ranges[i] <= msg.range_max and msg.ranges[i] < self.min_threshold_distance:
-                    self.current_distance = min(self.current_distance, msg.ranges[i])
-                    self._fsm = fsm.ROTATE_CALC
-                    break
-            if self._fsm != fsm.ROTATE_CALC:
-                self._fsm = fsm.MOVE_FORWARD
-            
-            
+                if msg.range_min <= msg.ranges[i] <= msg.range_max:
+                    rmin = min(rmin, msg.ranges[i])
+                    self._fsm = fsm.PID_CALC
+                    # self.prev_time = msg.header.stamp.sec + msg.header.stamp.nanosec * 10**(-9)
+
+            self.prev_time = self.curr_time 
+            self.curr_time = msg.header.stamp.sec + msg.header.stamp.nanosec * 10**(-9)
+            self.current_distance = rmin
+            # print("    wall dist: ", self.current_distance)
+
+            self._fsm = fsm.PID_CALC
             ####### ANSWER CODE END #######
 
     def spin(self):
         while rclpy.ok():
+            print("[SPIN]")
             # Keep looping until user presses Ctrl+C
-            
-            # If the flag self._close_obstacle is False, the robot should move forward.
-            # Otherwise, the robot should rotate for a random angle (use random.uniform() to generate a random value)
-            # after which the flag is set again to False.
-            # Use the function move to publish velocities already implemented,
-            # passing the default velocities saved in the corresponding class members.
+            # if fsm == move, move 
+            # if fsm == pid calculate, calculate, fsm = move 
+            # if fsm == stop, stop 
 
-            # operating at the set frequency
-            # https://robotics.stackexchange.com/questions/96684/rate-and-sleep-function-in-rclpy-library-for-ros2
             rclpy.spin_once(self)
 
-            ####### TODO: ANSWER CODE BEGIN #######
-            # if self._fsm == fsm.MOVE_FORWARD:
-            #     self.move(self.linear_velocity, 0.0)
-            # else:
-            #     if self._fsm == fsm.ROTATE_CALC:
-            #         random_angle = random.uniform(RANDOM_ROTATION_LEFT, RANDOM_ROTATION_RIGHT)
+            # now = self.get_clock().now().nanoseconds * 10 **-9
+            # dt = max(curr_time - self.prev_time, 1e-6)  # Ensure dt is never zero in cases where time difference is too small
+            # print("    curr: ", now, " || prev: ", self.prev_time)
+            # print("    diff: ", now-self.prev_time)
+            dt = 1/FREQUENCY
 
-            #         duration = Duration(seconds=abs(random_angle/self.angular_velocity))
-            #         self.current_angular_velocity = math.copysign(1, random_angle) * self.angular_velocity
-            #         self._fsm = fsm.ROTATE
-            #         start_time = self.get_clock().now()
-            #     if self._fsm == fsm.ROTATE:
-            #         # Check if traveled of given distance based on time.
-            #         if self.get_clock().now() - start_time >= duration:
-            #             self._fsm = fsm.WAITING_FOR_LASER
-            #         else:
-            #             # Publish message.
-            #             self.move(0.0, self.current_angular_velocity)
+            if self._fsm == fsm.MOVE:
+                self.move_dt(self.linear_velocity, self.angular_velocity, dt)
+            elif self._fsm == fsm.PID_CALC:
+                print("   wall: ", self.wall_distance, " curr_dist: ", self.current_distance)
+                err = self.wall_distance - self.current_distance 
+                print("   err: ", err)
+                
+                self.angular_velocity = self.clamp(self.pid.step(err, dt), -MAX_ANGULAR, MAX_ANGULAR)
+                print("   angular vel", self.angular_velocity)
+
+                self._fsm = fsm.MOVE
+            else: 
+                self._fsm = fsm.STOP
             
             ####### ANSWER CODE END #######      
 
@@ -211,12 +235,7 @@ def main(args=None):
     # 1st. initialization of node.
     rclpy.init(args=args)
 
-    # Initialization of the class for the random walk.
-    distance = input("Enter the distance to the wall (in m): ")
-    while distance.isnumeric() == False:    
-        print("Invalid input. Using default value of 0.5 m.")
-        distance = input("Enter the distance to the wall (in m): ")
-    
+    distance = 2
     wall_follow = WallFollow(distance)
 
     interrupted = False

@@ -4,7 +4,7 @@ include "rosbot.inc"
 resolution 0.02
 
 # simulation timestep in milliseconds
-interval_sim 100  
+interval_sim 100
 
 define floorplan model
 (
