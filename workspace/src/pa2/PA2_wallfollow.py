@@ -31,7 +31,6 @@ DEFAULT_SERVICE_NAME = 'on_off'
 
 # Frequency at which the loop operates
 FREQUENCY = 10 #Hz.
-# DT = 1/FREQUENCY # seconds
 
 # Velocities that will be used (TODO: feel free to tune)
 LINEAR_VELOCITY = 0.5 # m/s
@@ -46,11 +45,11 @@ MAX_SCAN_ANGLE_RAD = 0 + LASER_ROBOT_OFFSET
 
 USE_SIM_TIME = True
 
-KP = 0.2
+KP = 1
 KI = 0
-KD = 0.4
+KD = 2
 K = 0 
-distance = 2
+distance = 1
 
 class fsm(Enum):
     PID_CALC = 1
@@ -90,7 +89,7 @@ class WallFollow(Node):
         self._on_off_service = self.create_service(SetBool, f'{node_name}/{DEFAULT_SERVICE_NAME}', self._turn_on_off_callback)
 
         # fsm variable
-        self._fsm = fsm.MOVE
+        self._fsm = fsm.PID_CALC
 
         # distance to wall 
         self.wall_distance = float(distance)
@@ -100,6 +99,7 @@ class WallFollow(Node):
         self.pid = PID(KP, KI, KD, K)
 
         # prev time for dt 
+        self.start_time = 0 # first LS time in simulation time 
         self.prev_time = 0 
         self.curr_time = 0
              
@@ -186,13 +186,18 @@ class WallFollow(Node):
             for i in range(min_index, max_index+1):
                 if msg.range_min <= msg.ranges[i] <= msg.range_max:
                     rmin = min(rmin, msg.ranges[i])
-                    self._fsm = fsm.PID_CALC
-                    # self.prev_time = msg.header.stamp.sec + msg.header.stamp.nanosec * 10**(-9)
+            
+            self.current_distance = rmin
+            print("    wall dist: ", self.current_distance)
+
+            if self.start_time == 0: 
+                self.start_time  = msg.header.stamp.sec + msg.header.stamp.nanosec * 10**(-9)  # time since start of simulation, not since program start
+                self.prev_time = self.start_time
+                self.curr_time = self.start_time
+                return 
 
             self.prev_time = self.curr_time 
             self.curr_time = msg.header.stamp.sec + msg.header.stamp.nanosec * 10**(-9)
-            self.current_distance = rmin
-            # print("    wall dist: ", self.current_distance)
 
             self._fsm = fsm.PID_CALC
             ####### ANSWER CODE END #######
@@ -207,22 +212,14 @@ class WallFollow(Node):
 
             rclpy.spin_once(self)
 
-            # now = self.get_clock().now().nanoseconds * 10 **-9
-            # dt = max(curr_time - self.prev_time, 1e-6)  # Ensure dt is never zero in cases where time difference is too small
-            # print("    curr: ", now, " || prev: ", self.prev_time)
-            # print("    diff: ", now-self.prev_time)
-            dt = 1/FREQUENCY
+            dt = self.curr_time - self.prev_time  
+            if dt == 0: continue  # on laserscan initialization 
 
             if self._fsm == fsm.MOVE:
                 self.move_dt(self.linear_velocity, self.angular_velocity, dt)
             elif self._fsm == fsm.PID_CALC:
-                print("   wall: ", self.wall_distance, " curr_dist: ", self.current_distance)
-                err = self.wall_distance - self.current_distance 
-                print("   err: ", err)
-                
+                err = self.wall_distance - self.current_distance                
                 self.angular_velocity = self.clamp(self.pid.step(err, dt), -MAX_ANGULAR, MAX_ANGULAR)
-                print("   angular vel", self.angular_velocity)
-
                 self._fsm = fsm.MOVE
             else: 
                 self._fsm = fsm.STOP
@@ -235,7 +232,6 @@ def main(args=None):
     # 1st. initialization of node.
     rclpy.init(args=args)
 
-    distance = 2
     wall_follow = WallFollow(distance)
 
     interrupted = False
