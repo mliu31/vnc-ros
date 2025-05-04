@@ -18,10 +18,10 @@
 
 1. [Terminal 1] run docker using `docker compose up`
 2. close rosbot-gazebo in docker desktop
-3. [Terminal 2] enter pa2 directory (with the map files) and run the lightweight simulator Stage (installation instructions in PA2 if needed)
+3. [Terminal 2] enter pa3 directory (with the map files) and run the lightweight simulator Stage (installation instructions in PA2 if needed)
 
 ```docker compose exec ros bash
- cd pa2
+ cd pa3
  ros2 launch stage_ros2 stage.launch.py world:=/root/catkin_ws/src/pa3/maze
 enforce_prefixes:=false one_tf_tree:=true
 ```
@@ -48,7 +48,7 @@ sudo apt install ros-humble-nav2-map-server
 
 ```
 ros2 run nav2_util lifecycle_bringup map_server
-ros2 run tf2_ros static_transform_publisher 2 2 0 0 0 0 map rosbot/odom
+ros2 run tf2_ros static_transform_publisher 2 2 0 0 0 0 map odom --ros-args -p use_sim_time:=true
 ```
 
 7. [Terminal 8] run PA3
