@@ -22,8 +22,7 @@
 
 ```docker compose exec ros bash
  cd pa3
- ros2 launch stage_ros2 stage.launch.py world:=/root/catkin_ws/src/pa3/maze
-enforce_prefixes:=false one_tf_tree:=true
+ ros2 launch stage_ros2 stage.launch.py world:=/root/catkin_ws/src/pa3/maze enforce_prefixes:=false one_tf_tree:=true
 ```
 
 4. [Terminal 3] in a new terminal, run start the map server
