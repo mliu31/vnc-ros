@@ -37,8 +37,8 @@ MAP_FRAME_ID = "map"
 
 USE_SIM_TIME = True
 
-LINEAR_VELOCITY = 0.3 # m/s
-ANGULAR_VELOCITY = math.pi # rad/s
+LINEAR_VELOCITY = 0.1 # m/s
+ANGULAR_VELOCITY = math.pi/15 # rad/s
 
 class Grid:
     def __init__(self, occupancy_grid_data, width, height, resolution):
@@ -52,8 +52,9 @@ class Grid:
     
     def is_valid(self, r,c): 
         r,c = int(r), int(c)
-        buffer = 7
-        if 0 <= r < self.height and 0 <= c < self.width and self.grid[r-buffer:r+buffer, c-buffer:c+buffer].any() == 0:
+        buffer = 8
+
+        if 0 <= r < self.height and 0 <= c < self.width and not self.grid[r-buffer:r+buffer,c-buffer:c+buffer].any():
             return True 
         
         return False
@@ -111,7 +112,7 @@ class Plan(Node):
         """Get transformation between two frames."""
         try:
             while not self.tf_buffer.can_transform(target_frame, start_frame, self.get_clock().now()):
-                print("waiting...")
+                print("waiting for transform...")
                 rclpy.spin_once(self)
             tf_msg = self.tf_buffer.lookup_transform(target_frame, start_frame, self.get_clock().now())
         except TransformException as ex:
@@ -158,49 +159,25 @@ class Plan(Node):
         qx, qy, qz, qw = tf_transformations.quaternion_from_euler(0, 0, yaw)
         return Quaternion(x=qx, y=qy, z=qz, w=qw)
 
-    def grid_to_pose(self, curr_coords, prev_pose, running_angle): 
-        x, y, z = curr_coords
-        px, py, _ = self.pose_to_grid(prev_pose)
-        print("         processing ", px, py, " --> ", curr_coords[0], curr_coords[1])
-
-        # prev angle 
-        yaw = running_angle[0]
-
-        # angle to rotate from prev coords --> curr coords 
-        angle = self.get_angle(y-py, x-px)
-        
-        relative_angle = angle-yaw
-
-        print("          angle to rotate, curr angle: ", angle, yaw)
-        print("          relative angle: ", relative_angle, "\n")
-
-        q = self.make_quat(relative_angle)
-        pose = self.create_pose(x, y, z, q) 
-
-        running_angle[0] += relative_angle
-
-        return pose
-    
-    def px_to_pose(self, curr_px, prev_pose, running_angle): 
+    def px_to_pose(self, curr_px, prev_pose): 
         x, y = self.px_to_grid(curr_px[0], curr_px[1])
         px, py, _ = self.pose_to_grid(prev_pose)
-        print("         processing ", px, py, " --> ", x, y)
+        # print("         processing ", px, py, " --> ", x, y)
 
         # angle to rotate from prev coords --> curr coords 
         angle = self.get_angle(y-py, x-px)
         
-        print("          angle to rotate: ", angle)
+        # print("          angle: ", angle)
 
         q = self.make_quat(angle)
         pose = self.create_pose(x, y, 0, q) 
 
         return pose
 
-
     def pose_to_grid(self, pose): 
         return (pose.pose.position.x, pose.pose.position.y, pose.pose.position.z)
 
-    def path_to_poses(self, path, start_pose):
+    def path_to_pxposes(self, path, start_pose): # in px
         print("     converting px path to poses")
         pose_seq = [start_pose] 
 
@@ -208,11 +185,9 @@ class Plan(Node):
         quaternion = start_pose.pose.orientation 
         rpy = tf_transformations.euler_from_quaternion([quaternion.x, quaternion.y, quaternion.z, quaternion.w])
         yaw = rpy[2]
-        running_angle = [yaw] 
         
         for i in range(1, len(path)):
-
-            p = self.px_to_pose(path[i], pose_seq[i-1], running_angle)
+            p = self.px_to_pose(path[i], pose_seq[i-1])
             pose_seq.append(p)
         
         return pose_seq
@@ -226,13 +201,15 @@ class Plan(Node):
         pa.poses = [ps.pose for ps in poses_arr]
 
         self.pose_seq_pub.publish(pa)
+        print("   published")
     
     def px_to_grid(self,x_w, y_w): # px to m
         # column index
         c = x_w * self.map.resolution
         # row index
         r = y_w * self.map.resolution
-        return c, r
+        
+        return c, r  
 
     def grid_to_px(self,x, y): # m to pixels
         # column index
@@ -240,6 +217,40 @@ class Plan(Node):
         # row index
         c = y // self.map.resolution
         return r,c
+
+    def cleanup_path(self, path): 
+        # include start, end, rotations 
+        clean_path = []
+
+        # segment_start point 
+        segment_start = path[0]
+        matching_coord = None
+        for i in range(len(path)): 
+            coord = path[i]
+
+            # if start or end, add to clean_path 
+            if i == 0 or i == len(path)-1: 
+                clean_path.append(path[i])
+                continue 
+
+            if matching_coord == None:
+                # if x of coord matches segment_start point, 
+                if path[i][0] == segment_start[0]: 
+                    matching_coord = "x"
+                else: 
+                    matching_coord = "y"
+            else:  
+                x_coord_match = matching_coord == "x" and coord[0] == segment_start[0]  
+                y_coord_match =  matching_coord == "y" and coord[1] == segment_start[1]
+
+                if x_coord_match or y_coord_match: 
+                    continue 
+                else: 
+                    clean_path.append(path[i])
+                    segment_start = path[i]
+                    matching_coord = None 
+
+        return clean_path
 
     # on pixels 
     def treesearch(self, start, end, stack):  # with history 
@@ -265,7 +276,7 @@ class Plan(Node):
                     path.append(node)
                     node = prev[node]
                 path.reverse()
-                print("   PX PATH::: ", path)
+                # print("   PX PATH::: ", path)
 
                 return path 
             
@@ -274,14 +285,12 @@ class Plan(Node):
             neighbors = [(x+1,y), (x-1,y), (x,y+1), (x,y-1)]  # dfs order - down, up, left, right
             for n in neighbors: 
                 c,r = n
-                if self.map.is_valid(r,c) and n not in visited:  # valid bounds 
+                if self.map.is_valid(r,c) and n not in visited:  # valid bounds
                     # print("   neighbor: ", n)
                     prev[n] = leaf
                     frontier.append(n)
-                    if n not in visited: 
-                        visited.add(n)
+                    visited.add(n)
 
-        print("no path found")
         return None 
     
     # input start pose 
@@ -294,9 +303,13 @@ class Plan(Node):
         px_path = self.treesearch(start_px, end_px, stack)
         if px_path == None: return None
 
-        # turn path into array of poses 
-        pose_array = self.path_to_poses(px_path, start_pose)
+        px_path = self.cleanup_path(px_path)
+        print("path: ", px_path)
+
+        # turn path into array of poses
+        pose_array = self.path_to_pxposes(px_path, start_pose)
         self.publish_posearray(pose_array)
+        return True 
 
     def bfs(self, start_pose, end_coords): 
         print("BFS  ======================")
@@ -325,6 +338,9 @@ class Execute(Node):
 
         self.done = False
 
+        self.dist = []
+        self.rot = []
+
     def move(self, linear_vel, angular_vel):
         """Send a velocity command (linear vel in m/s, angular vel in rad/s)."""
         # Setting velocities.
@@ -339,28 +355,29 @@ class Execute(Node):
         print(f"   Rotating {angle} rad, {angle*180/math.pi} degrees")
 
         secs = abs(angle) / self.angular_velocity
-        start_time = time.time()
+        duration = Duration(seconds=secs)
+        start_time = self.get_clock().now()
 
         # rotate for certain duration 
         while rclpy.ok():
             rclpy.spin_once(self)
 
             # Check if the specified duration has elapsed.
-            if time.time() - start_time >= secs:
+            if self.get_clock().now() - start_time >= duration:
                 break
-            # Publish the twist message continuously.
+            # # Publish the twist message continuously.
             if angle > 0: 
                 self.move(0.0, self.angular_velocity)  # counterclockwise 
             else: 
                 self.move(0.0, -self.angular_velocity)  # clockwise
-            
 
     # distance in m 
     def translate(self, distance): 
         print(f"   Moving forward {distance}m")
         
         secs = abs(distance) / self.linear_velocity
-        start_time = time.time()
+        duration = Duration(seconds=secs)
+        start_time = self.get_clock().now()
 
         # rotate for certain duration 
         while rclpy.ok():
@@ -368,44 +385,59 @@ class Execute(Node):
             # Log current time information.
             
             # Check if the specified duration has elapsed.
-            if time.time() - start_time >= secs:
+            if self.get_clock().now() - start_time >= duration:                
                 break
             # Publish the twist message continuously.
             self.move(self.linear_velocity, 0.0)  
+
+    def stop(self):
+        """Stop the robot."""
+        twist_msg = Twist()
+        self._cmd_pub.publish(twist_msg)
 
     def pose_sequence_callback(self, msg): 
         print("\nPOSE SEQUENCE CALLBACK")
         poses = msg.poses
 
-        # prev_pose = None
-        # for p in poses:
-        #     if prev_pose is not None:
-        #     # Calculate distance between current pose and previous pose
-        #         dx = p.position.x - prev_pose.position.x
-        #         dy = p.position.y - prev_pose.position.y
-        #         distance = math.sqrt(dx**2 + dy**2)
+        prev_pose = None
+        for p in poses:
+            if prev_pose is not None:
+            # Calculate distance between current pose and previous pose
+                dx = p.position.x - prev_pose.position.x
+                dy = p.position.y - prev_pose.position.y
+                distance = math.sqrt(dx**2 + dy**2)
 
-        #         # Calculate relative angle between current pose and previous pose
-        #         prev_quaternion = prev_pose.orientation
-        #         prev_rpy = tf_transformations.euler_from_quaternion([prev_quaternion.x, prev_quaternion.y, prev_quaternion.z, prev_quaternion.w])
-        #         prev_yaw = prev_rpy[2]
+                # Calculate relative angle between current pose and previous pose
+                prev_quaternion = prev_pose.orientation
+                prev_rpy = tf_transformations.euler_from_quaternion([prev_quaternion.x, prev_quaternion.y, prev_quaternion.z, prev_quaternion.w])
+                prev_yaw = prev_rpy[2]
 
-        #         curr_quaternion = p.orientation
-        #         curr_rpy = tf_transformations.euler_from_quaternion([curr_quaternion.x, curr_quaternion.y, curr_quaternion.z, curr_quaternion.w])
-        #         curr_yaw = curr_rpy[2]
+                curr_quaternion = p.orientation
+                curr_rpy = tf_transformations.euler_from_quaternion([curr_quaternion.x, curr_quaternion.y, curr_quaternion.z, curr_quaternion.w])
+                curr_yaw = curr_rpy[2]
 
-        #         relative_angle = curr_yaw - prev_yaw
-        #     else:
-        #         distance = 0  # No movement for the first pose
-        #         relative_angle = 0  # No rotation for the first pose
+                relative_angle = curr_yaw - prev_yaw
+            else:
+                distance = 0  # No movement for the first pose
+                relative_angle = 0  # No rotation for the first pose
 
-        #     self.rotate(relative_angle)
-        #     self.translate(distance)
+            self.rot.append(relative_angle)
+            self.dist.append(distance) 
 
-        #     prev_pose = p
+            prev_pose = p
 
         self.done = True
 
+    def execute(self): 
+        print("Executing")
+        for i in range(len(self.rot)): 
+            angle = self.rot[i]
+            dist = self.dist[i]
+
+            self.rotate(angle)
+            self.translate(dist)
+        
+        self.stop()
 
 def main(args=None):
     # 1st. initialization of node.
@@ -421,31 +453,28 @@ def main(args=None):
         rclpy.spin_once(p)
 
     while rclpy.ok():
-        # print("this program runs bfs/dfs from the current location to a location of your choosing.")
-        # while True:
-        #     algo = input("do you want bfs or dfs? ").strip().lower()
-        #     if algo in ["bfs", "dfs"]:
-        #         break
-        #     print("invalid input - enter 'bfs' or 'dfs'")
+        print("this program runs bfs/dfs from the current location to a location of your choosing.")
+        while True:
+            algo = input("do you want bfs or dfs? ").strip().lower()
+            if algo in ["bfs", "dfs"]:
+                break
+            print("invalid input - enter 'bfs' or 'dfs'")
         
-        # while True: 
-        #     end_coords = input("Input the goal coordinates (format: x,y): ").strip()
-        #     try:
-        #         end_coords = tuple(map(int, end_coords.split(','))) + (0,)
-        #         print(end_coords)
-        #         if len(end_coords) == 3:
-        #             if not p.map.is_valid(end_coords[0], end_coords[1]):
-        #                 print("invalid input - that value isn't in the grid") 
-        #                 continue 
-        #             break
-        #         else:
-        #             print("invalid input - enter exactly two numbers separated by a comma")
-        #     except ValueError:
-        #         print("invalid input - enter valid integers separated by a comma")
-        algo = "bfs"
-        end_coords = (5,7)
-        end_coords = end_coords + (0,)
-        
+        while True: 
+            end_coords = input("Input the goal coordinates (format: x,y): ").strip()
+            try:
+                end_coords = tuple(map(int, end_coords.split(','))) + (0,)
+                print(end_coords)
+                if len(end_coords) == 3:
+                    if not p.map.is_valid(end_coords[0], end_coords[1]):
+                        print("invalid input - that value isn't in the grid") 
+                        continue 
+                    break
+                else:
+                    print("invalid input - enter exactly two numbers separated by a comma")
+            except ValueError:
+                print("invalid input - enter valid integers separated by a comma")
+                
         start_pose = p.get_currentloc()
 
         print("\n")
@@ -455,12 +484,19 @@ def main(args=None):
         else: 
             path_found = p.dfs(start_pose, end_coords)
 
-        if path_found is None: 
+        if path_found is None:
+            print("no path found") 
             continue 
-
-        while not e.done: 
-            rclpy.spin_once(p)
+        
+        print("waiting for distance and rotation arrays to be set")
+        while e.dist == [] and e.rot == []: 
             rclpy.spin_once(e)
+            pass 
+        e.execute()
+
+        rclpy.spin_once(p)
+        rclpy.spin_once(e)
+        break 
         
     rclpy.shutdown()
 
