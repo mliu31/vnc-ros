@@ -1,0 +1,24 @@
+husarnet:
+  image: husarnet/husarnet:latest
+
+  volumes:
+    # This will persist your Husarnet Client keys, thus IP of the container
+    # will be stable/the same between (re)boots.
+    # Feel free to choose any volume storage method of your liking
+    - ./husarnet-config:/var/lib/husarnet
+
+  # This is required to create new interface for communication over Husarnet
+  cap_add:
+    - NET_ADMIN
+
+  devices:
+    - /dev/net/tun
+
+  # See `Shared environment variables` section
+  environment:
+    - HUSARNET_HOSTNAME=megan
+    - HUSARNET_JOIN_CODE=fc94:4c25:cd59:e13:92ed:e237:2cb0:a1ca
+    - HUSARNET_DEBUG=1
+
+  # This line actually "injects" Husarnet Daemon into your app's container network
+  network_mode: service:ros
