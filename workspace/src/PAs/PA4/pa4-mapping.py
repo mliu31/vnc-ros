@@ -95,6 +95,12 @@ class Mapper(Node):
         r = y // self.grid.resolution
         return r,c
 
+    def odom_cell_to_grid_cell(self, c, r): 
+        origin_odom_m = self.grid.origin
+        orig_r, orig_c = self.m_to_cell(origin_odom_m[0], origin_odom_m[1])
+
+        return r-orig_r, c-orig_c
+
     def convert_bl_to_odom_loc(self, coords): # m rel to odom
             odom_T2_bl, _ = self.get_transformation(TF_BASE_LINK, TF_ODOM)
 
@@ -164,46 +170,71 @@ class Mapper(Node):
             angle_xaxis = (angle_bl + math.pi/2) % (2*math.pi)
 
             return angle_xaxis
-                
-        def publish_updated_grid(coords_to_val_dict): 
-            print("  publishing updated grid")
-            # print(coords_to_val_dict)
-
+    
+        def update_griddata(coords_to_val_dict): 
             # min of new and existing coords 
-            min_x = int(min(min(coords_to_val_dict.keys(), key=lambda k: k[0])[0], 0))
-            min_y = int(min(min(coords_to_val_dict.keys(), key=lambda k: k[1])[1], 0))
-            max_x = int(max(max(coords_to_val_dict.keys(), key=lambda k: k[0])[0], self.grid.width-1))
-            max_y = int(max(max(coords_to_val_dict.keys(), key=lambda k: k[1])[1], self.grid.height-1))
+
+            # cells rel to odom  
+            prev_minx_cell_odom = min(coords_to_val_dict.keys(), key=lambda k: k[0])[0]
+            prev_miny_cell_odom = min(coords_to_val_dict.keys(), key=lambda k: k[1])[1]
+            prev_maxx_cell_odom = max(coords_to_val_dict.keys(), key=lambda k: k[0])[0]
+            prev_maxy_cell_odom = max(coords_to_val_dict.keys(), key=lambda k: k[1])[1]
+
+            # cells rel to grid 
+            prev_minx_cell_grid = self.odom_cell_to_grid_cell(prev_minx_cell_odom,0)[1]
+            prev_miny_cell_grid = self.odom_cell_to_grid_cell(0,prev_miny_cell_odom)[0]
+            prev_maxx_cell_grid = self.odom_cell_to_grid_cell(prev_maxx_cell_odom,0)[1]
+            prev_maxy_cell_grid = self.odom_cell_to_grid_cell(0,prev_maxy_cell_odom)[0]
+                             
+            print(prev_minx_cell_grid, prev_miny_cell_grid, prev_maxx_cell_grid, prev_maxy_cell_grid)
+
+            # cells rel to odom
+            minx_odom = min(prev_minx_cell_odom, 0)
+            miny_odom = min(prev_miny_cell_odom, 0)
+            
+            # cells rel to grid 
+            minx_grid = int(min(prev_minx_cell_grid, 0))
+            miny_grid = int(min(prev_miny_cell_grid, 0))
+            maxx_grid = int(max(prev_maxx_cell_grid, self.grid.width-1))
+            maxy_grid = int(max(prev_maxy_cell_grid, self.grid.height-1))
+
+            print(minx_grid, miny_grid, maxx_grid, maxy_grid)
 
             # min/max vals are indices
-            height = max_y - min_y + 1 
-            width = max_x - min_x + 1 
+            height = maxy_grid - miny_grid + 1 
+            width = maxx_grid - minx_grid + 1 
             print("    shape: ", self.grid.grid.shape, " --> ", height, width)
-
 
             # create new grid based on these dimensions 
             data = np.full((int(height), int(width)), -1)
 
             # insert prev vals 
             prev_origin = self.grid.origin
-            prev_origin_indices = (int(abs(min_x)), int(abs(min_y)))
+            prev_origin_indices = (int(abs(minx_grid)), int(abs(miny_grid)))
             prev_width = int(self.grid.width)
             prev_height = int(self.grid.height)
 
             # updated origin
-            ox_new = min_x * self.grid.resolution
-            oy_new = min_y * self.grid.resolution
-            print("    origin: ", prev_origin, "m, ", prev_origin_indices, " cell in new grid --> ", ox_new, oy_new, "m")
+            ox_new = minx_odom * self.grid.resolution
+            oy_new = miny_odom * self.grid.resolution
+            print("    prev origin: ", prev_origin, "m odom, (0,0) cell in old grid--> ", prev_origin_indices, " cell in new grid")
+            print("    new origin: ", ox_new, oy_new, "m, at (0,0) in new grid")
 
-            print(prev_origin_indices[1], prev_height)
-
-            data[prev_origin_indices[1]:prev_height + prev_origin_indices[1], prev_origin_indices[0]:prev_width + prev_origin_indices[0]] = self.grid.grid
+            # data[prev_origin_indices[1]:prev_height + prev_origin_indices[1], prev_origin_indices[0]:prev_width + prev_origin_indices[0]] = self.grid.grid
 
             # insert new vals 
             for key,value in coords_to_val_dict.items():
                 x,y = int(key[0]), int(key[1]) 
-                # print("    x,y,val: ", x,y, value)
-                data[y-min_y,x-min_x] = value 
+                print("    x,y,val: ", x,y, value)
+                # data[y-miny_grid,x-minx_grid] = value 
+                data[y,x] = value 
+
+            return data, width, height, (ox_new, oy_new)
+                
+        def publish_updated_grid(coords_to_val_dict): 
+            print("  publishing updated grid")
+
+            data, width, height, origin = update_griddata(coords_to_val_dict)
             
             # create new occupancy grid msg 
             og_msg = OccupancyGrid()
@@ -219,7 +250,8 @@ class Mapper(Node):
 
             # update origin (in m rel to odom)
             q = self.make_quat(0)
-            origin_posemsg = self.create_posemsg(ox_new, oy_new,0,q)
+            ox, oy = origin
+            origin_posemsg = self.create_posemsg(ox, oy, 0,q)
             og_msg.info.origin = origin_posemsg # origin of map [m, m, rad] - real world pose of cell (0,0) in map
 
             og_msg.data = data.flatten().tolist()
