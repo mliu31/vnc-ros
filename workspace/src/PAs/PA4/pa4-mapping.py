@@ -38,16 +38,17 @@ MAP_FRAME_ID = "map"
 
 USE_SIM_TIME = True
 
-LINEAR_VELOCITY = 0.1 # m/s
-ANGULAR_VELOCITY = math.pi/15 # rad/s
+LINEAR_VELOCITY = 10 # m/s
+ANGULAR_VELOCITY = math.pi/3 # rad/s
 RESOLUTION = 0.01
 
 class Grid:
-    def __init__(self, occupancy_grid_data, width, height, resolution):
+    def __init__(self, occupancy_grid_data, width, height, resolution, origin):
         self.grid = np.reshape(occupancy_grid_data, (height, width))
         self.resolution = resolution
         self.height = height
         self.width  = width
+        self.origin = origin
 
 class Mapper(Node):
     def __init__(self, map_frame_id=MAP_FRAME_ID, node_name=NODE_NAME, context=None):
@@ -83,10 +84,18 @@ class Mapper(Node):
 
     def map_callback(self, msg):
         print("[MAP CALLBACK]")
-        self.grid = Grid(msg.data, msg.info.width, msg.info.height, msg.info.resolution)
+        origin = msg.info.origin.position.x, msg.info.origin.position.y  # meters rel to odom
+        self.grid = Grid(msg.data, msg.info.width, msg.info.height, msg.info.resolution, origin)
         self.occgrid_frame_id = msg.header.frame_id
 
-    def convert_bl_to_odom_loc(self, coords): # rel to odom
+    def grid_to_px(self,x, y): # m to pixels
+        # column index
+        c = x // self.grid.resolution
+        # row index
+        r = y // self.grid.resolution
+        return r,c
+
+    def convert_bl_to_odom_loc(self, coords): # m rel to odom
             odom_T2_bl, _ = self.get_transformation(TF_BASE_LINK, TF_ODOM)
 
             # print("odom_T2_bl: \n", odom_T2_bl)
@@ -99,7 +108,7 @@ class Mapper(Node):
 
             return odom_p[:2].tolist()
 
-    def bresenham(self, coord1, coord2): # in pixels 
+    def bresenham(self, coord1, coord2, last_pt_obstacle): # in pixels 
             pts_to_val = {} 
 
             x1, y1 = coord1 
@@ -119,12 +128,14 @@ class Mapper(Node):
                     y += 1 
                     eps -= dx 
                 x += 1
-
-            pts_to_val[(x,y)] = 100 
+            
+            if last_pt_obstacle: 
+                pts_to_val[(x,y)] = 100 
             return pts_to_val    
 
     def update_occ_grid(self): 
         print("[UPDATE OCCUPANCY GRID]")
+
         def idx_to_angle(idx): 
             # angle relative to LS ranges from -pi --> pi (idx 0 to 1600) 
             angle_ls = -math.pi + self.ls_angle_incr * idx
@@ -133,7 +144,10 @@ class Mapper(Node):
             # ranges from 0 to 2pi
             angle_bl = angle_ls + math.pi
 
-            return angle_bl
+            # angle rel to x-axis
+            angle_xaxis = (angle_bl + math.pi/2) % (2*math.pi)
+
+            return angle_xaxis
                 
         def publish_updated_grid(coords_to_val_dict): 
             print("  publishing updated grid")
@@ -150,15 +164,24 @@ class Mapper(Node):
             width = max_x - min_x + 1 
             print("    shape: ", self.grid.grid.shape, " --> ", height, width)
 
+
             # create new grid based on these dimensions 
             data = np.full((int(height), int(width)), -1)
 
             # insert prev vals 
-            prev_origin = (int(abs(min_x)), int(abs(min_y)))
+            prev_origin = self.grid.origin
+            prev_origin_indices = (int(abs(min_x)), int(abs(min_y)))
             prev_width = int(self.grid.width)
             prev_height = int(self.grid.height)
 
-            data[prev_origin[1]:prev_height, prev_origin[0]:prev_width] = self.grid.grid
+            # updated origin
+            ox_new = min_x * self.grid.resolution
+            oy_new = min_y * self.grid.resolution
+            print("    origin: ", prev_origin, "m, ", prev_origin_indices, " cell in new grid --> ", ox_new, oy_new, "m")
+
+            print(prev_origin_indices[1], prev_height)
+
+            data[prev_origin_indices[1]:prev_height + prev_origin_indices[1], prev_origin_indices[0]:prev_width + prev_origin_indices[0]] = self.grid.grid
 
             # insert new vals 
             for key,value in coords_to_val_dict.items():
@@ -180,24 +203,28 @@ class Mapper(Node):
 
             # update origin (in m rel to odom)
             q = self.make_quat(0)
-            ox_new = int(-min_x * self.grid.resolution)
-            oy_new = int(-min_y * self.grid.resolution)
             origin_posemsg = self.create_posemsg(ox_new, oy_new,0,q)
             og_msg.info.origin = origin_posemsg # origin of map [m, m, rad] - real world pose of cell (0,0) in map
-            og_msg.data = data.flatten().tolist()
 
-            print("    origin: ", prev_origin, " --> ", ox_new, oy_new)
+            og_msg.data = data.flatten().tolist()
 
             # publish msg
             self.occgrid_pub.publish(og_msg)
 
         pts_to_val = {}
 
+        loc_at_measurement_cells = self.grid_to_px(self.loc_at_measurement[0], self.loc_at_measurement[1])
+        # print(self.loc_at_measurement, loc_at_measurement_cells)
+        
         for i, r in enumerate(self.ls_ranges):
             if r == math.inf: 
                 r = 10
+                last_pt_obstacle = False
+            else: 
+                last_pt_obstacle = True 
 
             if self.ls_min_range <= r <= self.ls_max_range: 
+
                 r = r // self.grid.resolution # m to cells 
                 angle = idx_to_angle(i)
                 if 0 <= angle <= math.pi/4: 
@@ -205,19 +232,18 @@ class Mapper(Node):
                     x = r * math.cos(angle) # rel to bl 
                     y = r * math.sin(angle)
 
-                    # print("  curretn location: ", self.loc_at_measurement)
-
                     detected_loc_bl = [x,y] # rel to bl 
                     # print("  bl coords: ", detected_loc_bl)
-                    detected_loc_odom = self.convert_bl_to_odom_loc(detected_loc_bl)
+                    detected_loc_odom = self.grid_to_px(self.convert_bl_to_odom_loc(detected_loc_bl))
                     # print("  odom coords: ", detected_loc_odom)
 
-                    oneangle_pts_to_val = self.bresenham(self.loc_at_measurement, detected_loc_odom)
+                    # print("    ", loc_at_measurement_cells, detected_loc_odom)
+                    oneangle_pts_to_val = self.bresenham(loc_at_measurement_cells, detected_loc_odom, last_pt_obstacle)
                     # print("  ", oneangle_pts_to_val)
                     pts_to_val.update(oneangle_pts_to_val)
         
         if pts_to_val: 
-            # print(pts_to_val)
+            print(pts_to_val)
             publish_updated_grid(pts_to_val)
 
     def _laser_callback(self, laserscan_msg): 
@@ -227,10 +253,12 @@ class Mapper(Node):
         self.ls_min_range = laserscan_msg.range_min
         self.ls_max_range = laserscan_msg.range_max    
         self.ls_angle_incr = laserscan_msg.angle_increment  
-        self.loc_at_measurement = self.convert_bl_to_odom_loc([])  
-        print("   ", self.loc_at_measurement)
+
+        currloc_grid = self.convert_bl_to_odom_loc([])
+        self.loc_at_measurement = (currloc_grid[0], currloc_grid[1])
 
         self.update_occ_grid()
+        
 
     def get_transformation(self, start_frame, target_frame):
         """Get transformation between two frames."""
@@ -293,11 +321,11 @@ class Mapper(Node):
         # map data (list of -1, 0, 100 values = unknown, empty, occupied, respectively)
         data = [-1] * (og_msg.info.width * og_msg.info.height)
 
-        # TODO delete
-        num_rows = 0.5
-        width = og_msg.info.width
-        num_cells = int(num_rows * width)
-        data[0:num_cells] = [100] * num_cells 
+        # # TODO delete
+        # num_rows = 0.5
+        # width = og_msg.info.width
+        # num_cells = int(num_rows * width)
+        # data[0:num_cells] = [100] * num_cells 
 
         og_msg.data = data
         self.occgrid_pub.publish(og_msg)
