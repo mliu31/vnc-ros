@@ -40,14 +40,19 @@ USE_SIM_TIME = True
 
 LINEAR_VELOCITY = 10 # m/s
 ANGULAR_VELOCITY = math.pi/3 # rad/s
+
 RESOLUTION = 0.01
+INITIAL_SIZE = 100
+CELL_UNKNOWN = -1 
+CELL_OCCUPIED = 100
+CELL_FREE = 0    
 
 class Grid:
     def __init__(self, occupancy_grid_data, width, height, resolution, origin):
         self.grid = np.reshape(occupancy_grid_data, (height, width))
         self.resolution = resolution
-        self.height = height
-        self.width  = width
+        # self.height = height
+        # self.width  = width
         self.origin = origin
 
 class Mapper(Node):
@@ -62,6 +67,10 @@ class Mapper(Node):
         )
         self.set_parameters([use_sim_time_param])
 
+        # Setting up transformation listener.
+        self.tf_buffer = tf2_ros.Buffer()
+        self.listener = tf2_ros.TransformListener(self.tf_buffer, self)
+        
         self.map_frame_id = map_frame_id
 
         # occupancy grid 
@@ -72,15 +81,6 @@ class Mapper(Node):
         
         # lidar sensor 
         self._laser_sub = self.create_subscription(LaserScan, DEFAULT_SCAN_TOPIC, self._laser_callback, 1)
-        self.ls_ranges = {}
-        self.ls_min_range = -1
-        self.ls_max_range = -1
-        self.ls_angle_incr = -1
-        self.loc_at_measurement = None
-
-        # Setting up transformation listener.
-        self.tf_buffer = tf2_ros.Buffer()
-        self.listener = tf2_ros.TransformListener(self.tf_buffer, self)
 
     def map_callback(self, msg):
         print("[MAP CALLBACK]")
@@ -112,25 +112,41 @@ class Mapper(Node):
             pts_to_val = {} 
 
             x1, y1 = coord1 
-            x2, y2 = coord2
+            x2, y2 = coord2  
 
-            dx = x2-x1 
-            dy = y2-y1
+            dx = abs(x2-x1) 
+            dy = abs(y2-y1) 
 
-            x = x1
+            x = x1 
             y = y1
+            steep = dy > dx 
+                
             eps = 0 
+            if not steep: 
+                while (x < x2 and x2 > x1) or (x > x2 and x2 < x1): 
+                    pts_to_val[(x,y)] = 0
+                    eps += dy 
+                    if 2*eps > dx: 
+                        y = y + (1 if y2 > y1 else -1)
+                        eps -= dx 
+                    
+                    x = x + (1 if x2 > x1 else -1)
+                
+                if last_pt_obstacle: 
+                    pts_to_val[(x,y)] = 100 
+            else: 
+                while (y < y2 and y2 > y1) or (y > y2 and y2 < y1): 
+                    pts_to_val[(x,y)] = 0
+                    eps += dx 
+                    if 2*eps > dy: 
+                        x = x + (1 if x2 > x1 else -1)
+                        eps -= dy
+                    
+                    y = y + (1 if y2 > y1 else -1)
+                
+                if last_pt_obstacle: 
+                    pts_to_val[(x,y)] = 100 
 
-            while x < x2: 
-                pts_to_val[(x,y)] = 0 
-                eps += dy 
-                if 2*eps > dx: 
-                    y += 1 
-                    eps -= dx 
-                x += 1
-            
-            if last_pt_obstacle: 
-                pts_to_val[(x,y)] = 100 
             return pts_to_val    
 
     def update_occ_grid(self): 
@@ -234,32 +250,32 @@ class Mapper(Node):
 
                     detected_loc_bl = [x,y] # rel to bl 
                     # print("  bl coords: ", detected_loc_bl)
-                    detected_loc_odom = self.grid_to_px(self.convert_bl_to_odom_loc(detected_loc_bl))
+                    detected_loc_odom_cell = self.convert_bl_to_odom_loc(detected_loc_bl)
+                    detected_loc_odom_meter = self.grid_to_px(detected_loc_odom_cell[0], detected_loc_odom_cell[1])
                     # print("  odom coords: ", detected_loc_odom)
 
                     # print("    ", loc_at_measurement_cells, detected_loc_odom)
-                    oneangle_pts_to_val = self.bresenham(loc_at_measurement_cells, detected_loc_odom, last_pt_obstacle)
+                    oneangle_pts_to_val = self.bresenham(loc_at_measurement_cells, detected_loc_odom_meter, last_pt_obstacle)
                     # print("  ", oneangle_pts_to_val)
                     pts_to_val.update(oneangle_pts_to_val)
         
         if pts_to_val: 
-            print(pts_to_val)
+            # print(pts_to_val)
             publish_updated_grid(pts_to_val)
 
     def _laser_callback(self, laserscan_msg): 
         print("[LASER CALLBACK]")
         
-        self.ls_ranges = laserscan_msg.ranges
-        self.ls_min_range = laserscan_msg.range_min
-        self.ls_max_range = laserscan_msg.range_max    
-        self.ls_angle_incr = laserscan_msg.angle_increment  
+        # self.ls_ranges = laserscan_msg.ranges
+        # self.ls_min_range = laserscan_msg.range_min
+        # self.ls_max_range = laserscan_msg.range_max    
+        # self.ls_angle_incr = laserscan_msg.angle_increment  
 
-        currloc_grid = self.convert_bl_to_odom_loc([])
+        # currloc_grid = self.convert_bl_to_odom_loc([])
         self.loc_at_measurement = (currloc_grid[0], currloc_grid[1])
 
         self.update_occ_grid()
         
-
     def get_transformation(self, start_frame, target_frame):
         """Get transformation between two frames."""
         try:
@@ -309,8 +325,8 @@ class Mapper(Node):
         og_msg.header.frame_id = self.map_frame_id
 
         # metadata 
-        og_msg.info.width = 1000 # cells 
-        og_msg.info.height = 1000 # cells 
+        og_msg.info.width = INITIAL_SIZE # cells 
+        og_msg.info.height = INITIAL_SIZE # cells 
         og_msg.info.resolution =  RESOLUTION # m/cell 
 
         # origin = odom rf origin 
@@ -320,12 +336,6 @@ class Mapper(Node):
 
         # map data (list of -1, 0, 100 values = unknown, empty, occupied, respectively)
         data = [-1] * (og_msg.info.width * og_msg.info.height)
-
-        # # TODO delete
-        # num_rows = 0.5
-        # width = og_msg.info.width
-        # num_cells = int(num_rows * width)
-        # data[0:num_cells] = [100] * num_cells 
 
         og_msg.data = data
         self.occgrid_pub.publish(og_msg)
@@ -341,6 +351,7 @@ class Broadcaster(Node):
         super().__init__('odom_to_map_broadcaster')
         self.get_logger().info('Initializing static transform broadcaster')
         self.br = StaticTransformBroadcaster(self)
+
         t = TransformStamped()
         t.header.frame_id    = TF_ODOM
         t.child_frame_id     = TF_MAP
@@ -349,33 +360,16 @@ class Broadcaster(Node):
         t.transform.translation.y = 0.0
         t.transform.rotation.w    = 1.0 # identity rot
         self.br.sendTransform(t)
-        self.get_logger().info(
-            f'Sent transform from odom --> map'
-        )
 
-def main(args=None):
-    # 1st. initialization of node.
-    rclpy.init(args=args)
-    interrupted = False
+def main():
+    rclpy.init()
 
-    # Initialization of the map and broadcast classes 
     mapper = Mapper()
-    node = Broadcaster()  # publishes static (identity) transform between odom and map 
+    Broadcaster()  # publishes static (identity) transform between odom and map 
 
-    # Robot random walks.
-    try:
-        mapper.spin()
+    mapper.spin()
 
-    except KeyboardInterrupt:
-        interrupted = True
-        mapper.get_logger().error("ROS node interrupted.")
-
-    if interrupted:
-        new_context = rclpy.Context()
-        rclpy.init(context=new_context)
-        mapper = Mapper(node_name="mapper_end", context=new_context)
-        mapper.get_logger().error("ROS node interrupted.")
-        rclpy.try_shutdown()
+    rclpy.shutdown()
 
 if __name__ == "__main__":
     main()
