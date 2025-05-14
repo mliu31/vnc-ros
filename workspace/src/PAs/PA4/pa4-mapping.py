@@ -42,7 +42,7 @@ LINEAR_VELOCITY = 10 # m/s
 ANGULAR_VELOCITY = math.pi/3 # rad/s
 
 RESOLUTION = 0.01
-INITIAL_SIZE = 100
+INITIAL_SIZE = 1001
 CELL_UNKNOWN = -1 
 CELL_OCCUPIED = 100
 CELL_FREE = 0    
@@ -51,8 +51,8 @@ class Grid:
     def __init__(self, occupancy_grid_data, width, height, resolution, origin):
         self.grid = np.reshape(occupancy_grid_data, (height, width))
         self.resolution = resolution
-        # self.height = height
-        # self.width  = width
+        self.height = self.grid.shape[0]
+        self.width  = self.grid.shape[1]
         self.origin = origin
 
 class Mapper(Node):
@@ -88,7 +88,7 @@ class Mapper(Node):
         self.grid = Grid(msg.data, msg.info.width, msg.info.height, msg.info.resolution, origin)
         self.occgrid_frame_id = msg.header.frame_id
 
-    def grid_to_px(self,x, y): # m to pixels
+    def m_to_cell(self,x, y): # m to pixels
         # column index
         c = x // self.grid.resolution
         # row index
@@ -149,12 +149,12 @@ class Mapper(Node):
 
             return pts_to_val    
 
-    def update_occ_grid(self): 
+    def update_occ_grid(self, ranges, min_range, max_range, angle_incr, measure_loc_odom_m): 
         print("[UPDATE OCCUPANCY GRID]")
 
         def idx_to_angle(idx): 
             # angle relative to LS ranges from -pi --> pi (idx 0 to 1600) 
-            angle_ls = -math.pi + self.ls_angle_incr * idx
+            angle_ls = -math.pi + angle_incr * idx
 
             # angle relative to base link = LS angle + pi 
             # ranges from 0 to 2pi
@@ -229,35 +229,36 @@ class Mapper(Node):
 
         pts_to_val = {}
 
-        loc_at_measurement_cells = self.grid_to_px(self.loc_at_measurement[0], self.loc_at_measurement[1])
+        loc_at_measurement_cell = self.m_to_cell(measure_loc_odom_m[0], measure_loc_odom_m[1])
         # print(self.loc_at_measurement, loc_at_measurement_cells)
         
-        for i, r in enumerate(self.ls_ranges):
+        for i, r in enumerate(ranges):
             if r == math.inf: 
                 r = 10
-                last_pt_obstacle = False
+                hit_obst = False
             else: 
-                last_pt_obstacle = True 
+                hit_obst = True 
 
-            if self.ls_min_range <= r <= self.ls_max_range: 
-
+            if min_range <= r <= max_range: 
                 r = r // self.grid.resolution # m to cells 
                 angle = idx_to_angle(i)
-                if 0 <= angle <= math.pi/4: 
-                    # print("  angle wrt BL" , angle, " r:", r)
-                    x = r * math.cos(angle) # rel to bl 
-                    y = r * math.sin(angle)
+                # print("  angle wrt x-axis" , angle, " r:", r)
+                
+                # rel to cartesian coords 
+                x = r * math.cos(angle) 
+                y = r * math.sin(angle)
+                detectedloc_cell = [x,y] # rel to bl
+                # print("  detected_loc_cell: ", detected_loc_cell)
 
-                    detected_loc_bl = [x,y] # rel to bl 
-                    # print("  bl coords: ", detected_loc_bl)
-                    detected_loc_odom_cell = self.convert_bl_to_odom_loc(detected_loc_bl)
-                    detected_loc_odom_meter = self.grid_to_px(detected_loc_odom_cell[0], detected_loc_odom_cell[1])
-                    # print("  odom coords: ", detected_loc_odom)
+                detected_loc_odom_cell = self.convert_bl_to_odom_loc(detectedloc_cell)
+                # detected_loc_odom_meter = self.m_to_cell(detected_loc_odom_cell[0], detected_loc_odom_cell[1])
+                # print("  odom coords: ", detected_loc_odom)
 
-                    # print("    ", loc_at_measurement_cells, detected_loc_odom)
-                    oneangle_pts_to_val = self.bresenham(loc_at_measurement_cells, detected_loc_odom_meter, last_pt_obstacle)
-                    # print("  ", oneangle_pts_to_val)
-                    pts_to_val.update(oneangle_pts_to_val)
+                # print("    ", loc_at_measurement_cells, detected_loc_odom)
+                oneangle_pts_to_val = self.bresenham(loc_at_measurement_cell, detected_loc_odom_cell, hit_obst)
+                # print("  ", oneangle_pts_to_val)
+
+                pts_to_val.update(oneangle_pts_to_val)
         
         if pts_to_val: 
             # print(pts_to_val)
@@ -266,15 +267,14 @@ class Mapper(Node):
     def _laser_callback(self, laserscan_msg): 
         print("[LASER CALLBACK]")
         
-        # self.ls_ranges = laserscan_msg.ranges
-        # self.ls_min_range = laserscan_msg.range_min
-        # self.ls_max_range = laserscan_msg.range_max    
-        # self.ls_angle_incr = laserscan_msg.angle_increment  
+        ranges = laserscan_msg.ranges
+        min_range = laserscan_msg.range_min
+        max_range = laserscan_msg.range_max 
+        angle_incr = laserscan_msg.angle_increment
 
-        # currloc_grid = self.convert_bl_to_odom_loc([])
-        self.loc_at_measurement = (currloc_grid[0], currloc_grid[1])
+        currloc_odom_m = tuple(self.convert_bl_to_odom_loc([]))
 
-        self.update_occ_grid()
+        self.update_occ_grid(ranges, min_range, max_range, angle_incr, currloc_odom_m)
         
     def get_transformation(self, start_frame, target_frame):
         """Get transformation between two frames."""
