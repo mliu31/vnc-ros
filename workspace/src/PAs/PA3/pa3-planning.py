@@ -71,13 +71,12 @@ class Plan(Node):
         )
         self.set_parameters([use_sim_time_param])
 
-        # map subscriber and info 
+        # occgrid subscriber and info 
         self.sub = self.create_subscription(OccupancyGrid, MAP_TOPIC, self.map_callback, 1)
         self.map = None # the variable containing the map.
         self.map_frame_id = map_frame_id
-        
-        # occupancy grid 
         self.occgrid_frame_id = None
+        
 
         # Setting up transformation listener.
         self.tf_buffer = tf2_ros.Buffer()

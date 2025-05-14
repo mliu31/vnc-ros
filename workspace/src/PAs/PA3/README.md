@@ -8,7 +8,7 @@
 
 #### Term: Spring 2025
 
-#### Description: This code implements shape drawing behavior for the ROSbot2 using map_server. It plans a path and executes it.
+#### Description: This code implements path planning behavior for the ROSbot2 after processing the environment as an Occupancy Grid. It plans a path via BFS or DFS, then executes it.
 
 ## Requirements
 
