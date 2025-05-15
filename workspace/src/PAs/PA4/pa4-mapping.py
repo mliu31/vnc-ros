@@ -42,7 +42,7 @@ LINEAR_VELOCITY = 10 # m/s
 ANGULAR_VELOCITY = math.pi/3 # rad/s
 
 RESOLUTION = 0.01
-INITIAL_SIZE = 1001
+INITIAL_SIZE = 2000
 CELL_UNKNOWN = -1 
 CELL_OCCUPIED = 100
 CELL_FREE = 0    
@@ -135,11 +135,9 @@ class Mapper(Node):
         r = round(y / self.grid.resolution)
         return r,c
 
-    def odom_cell_to_grid_cell(self, c, r): 
-        origin_odom_m = self.grid.origin
-        orig_r, orig_c = self.m_to_cell(origin_odom_m[0], origin_odom_m[1])
-
-        return r-orig_r, c-orig_c
+    # def odom_cell_to_grid_cell(self, c, r): 
+    #     origin_odom_m = self.grid.origin
+    #     orig_r, orig_c = self.m_to_cell(origin_odom_m[0], origin_odom_m[1])
 
     def convert_bl_to_odom_loc(self, coords): # m rel to odom
             odom_T2_bl, quaternion = self.get_transformation(TF_BASE_LINK, TF_ODOM)
@@ -211,66 +209,95 @@ class Mapper(Node):
             # angle_xaxis = (angle_bl + math.pi/2) % (2*math.pi)
 
             return angle_xaxis
-    
-        def update_griddata(coords_to_val_dict): 
-            # min of new and existing coords 
+        
+        def process_sensor_data(): 
+            print("  processing sensor data")
+            pts_to_val = {}
 
-            # cells rel to odom  
-            prev_minx_cell_odom = min(coords_to_val_dict.keys(), key=lambda k: k[0])[0]
-            prev_miny_cell_odom = min(coords_to_val_dict.keys(), key=lambda k: k[1])[1]
-            prev_maxx_cell_odom = max(coords_to_val_dict.keys(), key=lambda k: k[0])[0]
-            prev_maxy_cell_odom = max(coords_to_val_dict.keys(), key=lambda k: k[1])[1]
-
-            # cells rel to grid 
-            prev_minx_cell_grid = self.odom_cell_to_grid_cell(prev_minx_cell_odom,0)[1]
-            prev_miny_cell_grid = self.odom_cell_to_grid_cell(0,prev_miny_cell_odom)[0]
-            prev_maxx_cell_grid = self.odom_cell_to_grid_cell(prev_maxx_cell_odom,0)[1]
-            prev_maxy_cell_grid = self.odom_cell_to_grid_cell(0,prev_maxy_cell_odom)[0]
-                             
-            print(prev_minx_cell_grid, prev_miny_cell_grid, prev_maxx_cell_grid, prev_maxy_cell_grid)
-
-            # cells rel to odom
-            minx_odom = min(prev_minx_cell_odom, 0)
-            miny_odom = min(prev_miny_cell_odom, 0)
+            loc_at_measurement_cell = self.m_to_cell(measure_loc_odom_m[0], measure_loc_odom_m[1])
             
-            # cells rel to grid 
-            minx_grid = int(min(prev_minx_cell_grid, 0))
-            miny_grid = int(min(prev_miny_cell_grid, 0))
-            maxx_grid = int(max(prev_maxx_cell_grid, self.grid.width-1))
-            maxy_grid = int(max(prev_maxy_cell_grid, self.grid.height-1))
+            # process sensor data 
+            for i, r in enumerate(ranges):
+                if r == math.inf: 
+                    r = 10
+                    hit_obst = False
+                else: 
+                    hit_obst = True 
 
-            print(minx_grid, miny_grid, maxx_grid, maxy_grid)
+                if min_range <= r <= max_range: 
+                    r = r // self.grid.resolution # m to cells 
+                    angle = idx_to_angle(i)
+                    
+                    # rel to cartesian coords 
+                    x = r * math.cos(angle) 
+                    y = r * math.sin(angle)
+                    detectedloc_cell = [x,y] # rel to bl
 
-            # min/max vals are indices
-            height = maxy_grid - miny_grid + 1 
-            width = maxx_grid - minx_grid + 1 
-            print("    shape: ", self.grid.grid.shape, " --> ", height, width)
+                    detected_loc_odom_cell = self.convert_bl_to_odom_loc(detectedloc_cell)
 
-            # create new grid based on these dimensions 
-            data = np.full((int(height), int(width)), -1)
+                    oneangle_pts_to_val = self.bresenham(loc_at_measurement_cell, detected_loc_odom_cell, hit_obst)
 
-            # insert prev vals 
-            prev_origin = self.grid.origin
-            prev_origin_indices = (int(abs(minx_grid)), int(abs(miny_grid)))
+                    pts_to_val.update(oneangle_pts_to_val)
+            
+            return pts_to_val
+        
+        def update_griddata(cells_odom_to_val): 
+            print("  updating grid data")
+
+            ## RESIZE GRID 
+            
+            # min of new cells (cells in odom)
+            minx_new_odom_cell = min(cells_odom_to_val.keys(), key=lambda k: k[0])[0]
+            miny_new_odom_cell = min(cells_odom_to_val.keys(), key=lambda k: k[1])[1]
+            maxx_new_odom_cell = max(cells_odom_to_val.keys(), key=lambda k: k[0])[0]
+            maxy_new_odom_cell = max(cells_odom_to_val.keys(), key=lambda k: k[1])[1]
+
+            # prev origin (m and cell in odom)
+            ox_prev_m_odom, oy_prev_m_odom = self.grid.origin
+            oy_prev_cell_odom, ox_prev_cell_odom = self.m_to_cell(ox_prev_m_odom, oy_prev_m_odom)
+
+            # min of prev grid and new cells
             prev_width = int(self.grid.width)
             prev_height = int(self.grid.height)
+            
+            minx_odom_cell = min(minx_new_odom_cell, ox_prev_cell_odom)
+            miny_odom_cell = min(miny_new_odom_cell, oy_prev_cell_odom)
+            maxx_odom_cell = max(maxx_new_odom_cell, prev_width-1 + ox_prev_cell_odom)
+            maxy_odom_cell = max(maxy_new_odom_cell, prev_height-1 + oy_prev_cell_odom)
 
-            # updated origin
-            ox_new = minx_odom * self.grid.resolution
-            oy_new = miny_odom * self.grid.resolution
-            print("    prev origin: ", prev_origin, "m odom, (0,0) cell in old grid--> ", prev_origin_indices, " cell in new grid")
-            print("    new origin: ", ox_new, oy_new, "m, at (0,0) in new grid")
+            # print(maxx_new_odom_cell, prev_height-1 + ox_prev_m_odom)
 
-            # data[prev_origin_indices[1]:prev_height + prev_origin_indices[1], prev_origin_indices[0]:prev_width + prev_origin_indices[0]] = self.grid.grid
+            height = int(maxy_odom_cell - miny_odom_cell + 1)
+            width = int(maxx_odom_cell - minx_odom_cell + 1)
+            print(width, maxx_odom_cell, minx_odom_cell)
 
-            # insert new vals 
-            for key,value in coords_to_val_dict.items():
-                x,y = int(key[0]), int(key[1]) 
-                print("    x,y,val: ", x,y, value)
-                # data[y-miny_grid,x-minx_grid] = value 
+            # create resized grid 
+            data = np.full((height, width), -1)
+            print("    shape: ", self.grid.grid.shape, " --> ", height, width)
+
+            ## UPDATE ORIGIN 
+
+            # prev origin cell in new grid 
+            ox_prev_cell_newgrid, oy_prev_cell_newgrid = (int(ox_prev_cell_odom-minx_odom_cell), int(oy_prev_cell_odom-miny_odom_cell))
+
+            # new origin 
+            origin_new_odom_cells = (minx_odom_cell, miny_odom_cell)
+            origin_new_odom_m = self.cell_to_m(origin_new_odom_cells[1], origin_new_odom_cells[0])
+
+            print("    prev origin: ", ox_prev_m_odom, oy_prev_m_odom, "m odom, ", ox_prev_cell_odom, oy_prev_cell_odom,  "cell in odom --> ", ox_prev_cell_newgrid, oy_prev_cell_newgrid, " cell in new grid")
+            print("    new origin: ", origin_new_odom_m[0], origin_new_odom_m[1], "m odom, ", origin_new_odom_cells, " cell in odom")
+            
+            ## UPDATE DATA IN NEW GRID
+
+            # insert prev grid
+            data[oy_prev_cell_newgrid:prev_height + oy_prev_cell_newgrid, ox_prev_cell_newgrid:prev_width + ox_prev_cell_newgrid] = self.grid.grid
+
+            # insert new data 
+            for key,value in cells_odom_to_val.items():
+                x,y = int(key[0]-origin_new_odom_cells[1]), int(key[1]-origin_new_odom_cells[0]) 
                 data[y,x] = value 
 
-            return data, width, height, (ox_new, oy_new)
+            return data, width, height, origin_new_odom_m 
                 
         def publish_updated_grid(coords_to_val_dict): 
             print("  publishing updated grid")

@@ -17,16 +17,8 @@
 ## How to run:
 
 1. [Terminal 1] run docker using `docker compose up`
-2. close rosbot-gazebo in docker desktop
-3. [Terminal 2] enter pa3 directory (with the map files) and run the lightweight simulator Stage (installation instructions in PA2 if needed)
-
-```docker compose exec ros bash
- ros2 launch stage_ros2 stage.launch.py world:=/root/catkin_ws/src/pa3/maze enforce_prefixes:=false one_tf_tree:=true
-```
-
-```
-
-5. [Terminal 3.5] visualize map in rviz > add topic > choose map
+2. [Terminal 2] enter pa4 directory
+3. [Terminal 3] visualize map in rviz > add topic > choose map
 
 ```
 
@@ -34,12 +26,16 @@ rviz2
 
 ```
 
-7. [Terminal 8] run PA3
+7. [Terminal 8] run PA4
 
 ```
 
-python3 pa3-planning.py
+python3 pa4-mapping.py
 
 ```
 
+4. Terminal 4
+
+```
+ros2 run teleop_twist_keyboard teleop_twist_keyboard
 ```
