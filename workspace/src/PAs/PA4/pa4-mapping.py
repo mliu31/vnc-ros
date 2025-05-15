@@ -276,12 +276,12 @@ class Mapper(Node):
             miny_odom_cell = min(miny_new_odom_cell, oy_prev_cell_odom)
             maxx_odom_cell = max(maxx_new_odom_cell, prev_width-1 + ox_prev_cell_odom)
             maxy_odom_cell = max(maxy_new_odom_cell, prev_height-1 + oy_prev_cell_odom)
+            print("    new grid: ",minx_odom_cell,miny_odom_cell, " --> ",maxx_odom_cell,maxy_odom_cell)
 
             # print(maxx_new_odom_cell, prev_height-1 + ox_prev_m_odom)
 
             height = int(maxy_odom_cell - miny_odom_cell + 1)
             width = int(maxx_odom_cell - minx_odom_cell + 1)
-            print(width, maxx_odom_cell, minx_odom_cell)
 
             # create resized grid 
             data = np.full((height, width), -1)
@@ -306,7 +306,7 @@ class Mapper(Node):
 
             # insert new data 
             for key,value in cells_odom_to_val.items():
-                x,y = int(key[0]-origin_new_odom_cells[1]), int(key[1]-origin_new_odom_cells[0]) 
+                x,y = int(key[0]-origin_new_odom_cells[0]), int(key[1]-origin_new_odom_cells[1]) 
                 data[y,x] = value 
 
             return data, width, height, origin_new_odom_m 
@@ -341,9 +341,9 @@ class Mapper(Node):
 
         left = min(pts_to_val.keys(), key=lambda k: k[0])
         right = max(pts_to_val.keys(), key=lambda k: k[0])
-        top = min(pts_to_val.keys(), key=lambda k: k[1])
-        bottom = max(pts_to_val.keys(), key=lambda k: k[1])
-        print("  sensor readings left, right, top, bottom bounds: \n", left, right, top, bottom)
+        top = max(pts_to_val.keys(), key=lambda k: k[1])
+        bottom = min(pts_to_val.keys(), key=lambda k: k[1])
+        print("    sensor readings left, right, top, bottom bounds:  ", left, right, top, bottom)
 
         data, width, height, origin_new_odom_m = update_griddata(pts_to_val)
         publish_updated_grid(data, width, height, origin_new_odom_m)
