@@ -82,33 +82,66 @@ class Mapper(Node):
         # lidar sensor 
         self._laser_sub = self.create_subscription(LaserScan, DEFAULT_SCAN_TOPIC, self._laser_callback, 1)
 
-    def map_callback(self, msg):
-        print("[MAP CALLBACK]")
-        origin = msg.info.origin.position.x, msg.info.origin.position.y  # meters rel to odom
-        self.grid = Grid(msg.data, msg.info.width, msg.info.height, msg.info.resolution, origin)
-        self.occgrid_frame_id = msg.header.frame_id
+    def get_transformation(self, start_frame, target_frame):
+        """Get transformation between two frames."""
+        try:
+            while not self.tf_buffer.can_transform(target_frame, start_frame, self.get_clock().now()):
+                # print("waiting for transform...")
+                rclpy.spin_once(self)
+            tf_msg = self.tf_buffer.lookup_transform(target_frame, start_frame, self.get_clock().now())
+        except TransformException as ex:
+            self.get_logger().info(
+                f'Could not transform: {ex}')
+            return
+    
+        # self.get_logger().info(f'Received tf message: {tf_msg}')   
+        translation = tf_msg.transform.translation
+        quaternion = tf_msg.transform.rotation
+
+        t = tf_transformations.translation_matrix([translation.x, translation.y, translation.z])
+        R = tf_transformations.quaternion_matrix([quaternion.x, quaternion.y, quaternion.z, quaternion.w])
+        T = t.dot(R)
+        T = np.round(T, decimals=1) # rounding minimizes noise 
+        
+        return T, quaternion
+
+    def make_quat(self, yaw):
+        qx, qy, qz, qw = tf_transformations.quaternion_from_euler(0, 0, yaw)
+        return Quaternion(x=qx, y=qy, z=qz, w=qw)
+    
+    def get_yaw(self, quat): 
+        _, _, yaw = tf_transformations.euler_from_quaternion([quat.x, quat.y, quat.z, quat.w])
+        return yaw
+
+    def create_posemsg(self, x, y, z, q):
+        """Example of publishing an arrow, without orientation."""
+        pose_msg = Pose()
+        
+        pose_msg.position.x = float(x)
+        pose_msg.position.y = float(y)
+        pose_msg.position.z = float(z)
+        pose_msg.orientation.x = float(q.x)
+        pose_msg.orientation.y = float(q.y)
+        pose_msg.orientation.z = float(q.z)
+        pose_msg.orientation.w = float(q.w)
+
+        return pose_msg
+
 
     def m_to_cell(self,x, y): # m to pixels
         # column index
         c = x // self.grid.resolution
         # row index
         r = y // self.grid.resolution
-        return r,c
+        return round(r),round(c)
 
     def cell_to_m(self, r,c): 
         x = c * self.grid.resolution 
         y = r * self.grid.resolution
-        return x,y
-
-
-    # def odom_cell_to_grid_cell(self, c, r): 
-    #     origin_odom_m = self.grid.origin
-    #     orig_r, orig_c = self.m_to_cell(origin_odom_m[0], origin_odom_m[1])
-
-    #     return r-orig_r, c-orig_c
+        return round(x),round(y)
 
     def convert_bl_to_odom_loc(self, coords): # m rel to odom
-            odom_T2_bl, _ = self.get_transformation(TF_BASE_LINK, TF_ODOM)
+            odom_T2_bl, quaternion = self.get_transformation(TF_BASE_LINK, TF_ODOM)
 
             # print("odom_T2_bl: \n", odom_T2_bl)
             if coords == []: 
@@ -117,8 +150,9 @@ class Mapper(Node):
                 odom_p = np.append(np.array(coords), np.array([0, 1]))
 
             odom_p = odom_T2_bl.dot(odom_p.transpose())
+            # print(odom_p)
 
-            return odom_p[:2].tolist()
+            return odom_p[:2].tolist(), quaternion
 
     def bresenham(self, coord1, coord2, last_pt_obstacle): # in pixels 
             pts_to_val = {} 
@@ -161,7 +195,7 @@ class Mapper(Node):
 
             return pts_to_val    
 
-    def update_occ_grid(self, ranges, min_range, max_range, angle_incr, measure_loc_odom_m): 
+    def update_occ_grid(self, ranges, min_range, max_range, angle_incr, measure_loc_odom_m, measure_loc_quat): 
         print("[UPDATE OCCUPANCY GRID]")
 
         def idx_to_angle(idx): 
@@ -181,6 +215,7 @@ class Mapper(Node):
             print("  processing sensor data")
             pts_to_val = {}
 
+            print("     current location: ", measure_loc_odom_m)
             loc_at_measurement_cell = self.m_to_cell(measure_loc_odom_m[0], measure_loc_odom_m[1])
             
             # process sensor data 
@@ -193,19 +228,39 @@ class Mapper(Node):
 
                 if min_range <= r <= max_range: 
                     r = r // self.grid.resolution # m to cells 
-                    angle = idx_to_angle(i)
+                    angle_xaxis = idx_to_angle(i)
                     
-                    # rel to cartesian coords 
-                    x = r * math.cos(angle) 
-                    y = r * math.sin(angle)
-                    detectedloc_cell = [x,y] # rel to bl
+                    # cartesian cell 
+                    x = round(r * math.cos(angle_xaxis))
+                    y = round(r * math.sin(angle_xaxis))
+                    detectedloc_cartesian_cell = (x,y)
 
-                    detected_loc_odom_cell = self.convert_bl_to_odom_loc(detectedloc_cell)
+                    yaw = self.get_yaw(measure_loc_quat)
+                    xaxis_to_bl_angle = yaw + (math.pi/2)
 
-                    oneangle_pts_to_val = self.bresenham(loc_at_measurement_cell, detected_loc_odom_cell, hit_obst)
+                    # detectedloc_bl_cell = pass 
+                    detected_bl_m = self.cell_to_m(detectedloc_bl_cell[1], detectedloc_bl_cell[0])
+                    if i == 0: 
+                        print("     angle from x axis, x-axis to bl: ", angle_xaxis, xaxis_to_bl_angle)
+                        print("     detectedloc_cartesian_cell", detectedloc_cartesian_cell)
+                        # print("     detectedloc_bl_cell", detectedloc_bl_cell)
+                        print("     detected bl_m", detected_bl_m)
+    
+                    detectedloc_odom_m, _ = self.convert_bl_to_odom_loc(detected_bl_m)
+                    detectedloc_odom_cell = self.m_to_cell(detectedloc_odom_m[1], detectedloc_odom_m[0])
+                    if i == 0: 
+                        print("      detectedloc_odom_m: ", detectedloc_odom_m)
+                        print("      detectedloc_odom_cell: ", detectedloc_odom_cell)
+                    
+                    
+                    oneangle_pts_to_val = self.bresenham(loc_at_measurement_cell, detectedloc_odom_cell, hit_obst)
 
                     pts_to_val.update(oneangle_pts_to_val)
             
+            if pts_to_val:
+                max_y = max(pts_to_val.keys(), key=lambda k: k[1])[1]
+                print("              largest y value in pts_to_val: ", max_y)
+
             return pts_to_val
         
         def update_griddata(cells_odom_to_val): 
@@ -232,11 +287,8 @@ class Mapper(Node):
             maxx_odom_cell = max(maxx_new_odom_cell, prev_width-1 + ox_prev_cell_odom)
             maxy_odom_cell = max(maxy_new_odom_cell, prev_height-1 + oy_prev_cell_odom)
 
-            # print(maxx_new_odom_cell, prev_height-1 + ox_prev_m_odom)
-
             height = int(maxy_odom_cell - miny_odom_cell + 1)
             width = int(maxx_odom_cell - minx_odom_cell + 1)
-            print(width, maxx_odom_cell, minx_odom_cell)
 
             # create resized grid 
             data = np.full((height, width), -1)
@@ -265,69 +317,6 @@ class Mapper(Node):
                 data[y,x] = value 
 
             return data, width, height, origin_new_odom_m 
-        
-        """
-        def update_griddata(coords_to_val_dict): 
-            print("  updating grid data")
-            # min of new and existing coords 
-
-            # cells rel to odom  
-            prev_minx_cell_odom = min(coords_to_val_dict.keys(), key=lambda k: k[0])[0]
-            prev_miny_cell_odom = min(coords_to_val_dict.keys(), key=lambda k: k[1])[1]
-            prev_maxx_cell_odom = max(coords_to_val_dict.keys(), key=lambda k: k[0])[0]
-            prev_maxy_cell_odom = max(coords_to_val_dict.keys(), key=lambda k: k[1])[1]
-
-            # cells rel to grid 
-            prev_minx_cell_grid = self.odom_cell_to_grid_cell(prev_minx_cell_odom,0)[1]
-            prev_miny_cell_grid = self.odom_cell_to_grid_cell(0,prev_miny_cell_odom)[0]
-            prev_maxx_cell_grid = self.odom_cell_to_grid_cell(prev_maxx_cell_odom,0)[1]
-            prev_maxy_cell_grid = self.odom_cell_to_grid_cell(0,prev_maxy_cell_odom)[0]
-                             
-            print(prev_minx_cell_grid, prev_miny_cell_grid, prev_maxx_cell_grid, prev_maxy_cell_grid)
-
-            # cells rel to odom
-            minx_odom = min(prev_minx_cell_odom, 0)
-            miny_odom = min(prev_miny_cell_odom, 0)
-            
-            # cells rel to grid 
-            minx_grid = int(min(prev_minx_cell_grid, 0))
-            miny_grid = int(min(prev_miny_cell_grid, 0))
-            maxx_grid = int(max(prev_maxx_cell_grid, self.grid.width-1))
-            maxy_grid = int(max(prev_maxy_cell_grid, self.grid.height-1))
-
-            print(minx_grid, miny_grid, maxx_grid, maxy_grid)
-
-            # min/max vals are indices
-            height = maxy_grid - miny_grid + 1 
-            width = maxx_grid - minx_grid + 1 
-            print("    shape: ", self.grid.grid.shape, " --> ", height, width)
-
-            # create new grid based on these dimensions 
-            data = np.full((int(height), int(width)), -1)
-
-            # insert prev vals 
-            prev_origin = self.grid.origin
-            prev_origin_indices = (int(abs(minx_grid)), int(abs(miny_grid)))
-            prev_width = int(self.grid.width)
-            prev_height = int(self.grid.height)
-
-            # updated origin
-            ox_new = minx_odom * self.grid.resolution
-            oy_new = miny_odom * self.grid.resolution
-            print("    prev origin: ", prev_origin, "m odom, (0,0) cell in old grid--> ", prev_origin_indices, " cell in new grid")
-            print("    new origin: ", ox_new, oy_new, "m, at (0,0) in new grid")
-
-            # data[prev_origin_indices[1]:prev_height + prev_origin_indices[1], prev_origin_indices[0]:prev_width + prev_origin_indices[0]] = self.grid.grid
-
-            # insert new vals 
-            for key,value in coords_to_val_dict.items():
-                x,y = int(key[0]), int(key[1]) 
-                # print("    x,y,val: ", x,y, value)
-                # data[y-miny_grid,x-minx_grid] = value 
-                data[y,x] = value 
-
-            return data, width, height, (ox_new, oy_new)
-        """
                 
         def publish_updated_grid(data, width, height, origin): 
             print("  publishing updated grid")
@@ -367,50 +356,15 @@ class Mapper(Node):
         max_range = laserscan_msg.range_max 
         angle_incr = laserscan_msg.angle_increment
 
-        currloc_odom_m = tuple(self.convert_bl_to_odom_loc([]))
+        currloc_odom_m, quat = tuple(self.convert_bl_to_odom_loc([]))
 
-        self.update_occ_grid(ranges, min_range, max_range, angle_incr, currloc_odom_m)
-        
-    def get_transformation(self, start_frame, target_frame):
-        """Get transformation between two frames."""
-        try:
-            while not self.tf_buffer.can_transform(target_frame, start_frame, self.get_clock().now()):
-                # print("waiting for transform...")
-                rclpy.spin_once(self)
-            tf_msg = self.tf_buffer.lookup_transform(target_frame, start_frame, self.get_clock().now())
-        except TransformException as ex:
-            self.get_logger().info(
-                f'Could not transform: {ex}')
-            return
+        self.update_occ_grid(ranges, min_range, max_range, angle_incr, currloc_odom_m, quat)
     
-        # self.get_logger().info(f'Received tf message: {tf_msg}')   
-        translation = tf_msg.transform.translation
-        quaternion = tf_msg.transform.rotation
-
-        t = tf_transformations.translation_matrix([translation.x, translation.y, translation.z])
-        R = tf_transformations.quaternion_matrix([quaternion.x, quaternion.y, quaternion.z, quaternion.w])
-        T = t.dot(R)
-        T = np.round(T, decimals=1) # rounding minimizes noise 
-        
-        return T, quaternion
-
-    def make_quat(self, yaw):
-        qx, qy, qz, qw = tf_transformations.quaternion_from_euler(0, 0, yaw)
-        return Quaternion(x=qx, y=qy, z=qz, w=qw)
-
-    def create_posemsg(self, x, y, z, q):
-        """Example of publishing an arrow, without orientation."""
-        pose_msg = Pose()
-        
-        pose_msg.position.x = float(x)
-        pose_msg.position.y = float(y)
-        pose_msg.position.z = float(z)
-        pose_msg.orientation.x = float(q.x)
-        pose_msg.orientation.y = float(q.y)
-        pose_msg.orientation.z = float(q.z)
-        pose_msg.orientation.w = float(q.w)
-
-        return pose_msg
+    def map_callback(self, msg):
+        print("[MAP CALLBACK]")
+        origin = msg.info.origin.position.x, msg.info.origin.position.y  # meters rel to odom
+        self.grid = Grid(msg.data, msg.info.width, msg.info.height, msg.info.resolution, origin)
+        self.occgrid_frame_id = msg.header.frame_id
 
     def init_occgrid(self): 
         print("[INITIALIZE OCCUPANCY GRID]")
@@ -420,8 +374,8 @@ class Mapper(Node):
         og_msg.header.frame_id = self.map_frame_id
 
         # metadata 
-        og_msg.info.width = INITIAL_SIZE # cells 
-        og_msg.info.height = INITIAL_SIZE # cells 
+        og_msg.info.width = 500 # cells 
+        og_msg.info.height = 1000 # cells 
         og_msg.info.resolution =  RESOLUTION # m/cell 
 
         # origin = odom rf origin 
