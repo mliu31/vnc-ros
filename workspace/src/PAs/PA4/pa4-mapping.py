@@ -38,11 +38,11 @@ MAP_FRAME_ID = "map"
 
 USE_SIM_TIME = True
 
-LINEAR_VELOCITY = 10 # m/s
+LINEAR_VELOCITY = 2 # m/s
 ANGULAR_VELOCITY = math.pi/3 # rad/s
 
 RESOLUTION = 0.01
-INITIAL_SIZE = 2000
+INITIAL_SIZE = 100
 CELL_UNKNOWN = -1 
 CELL_OCCUPIED = 100
 CELL_FREE = 0    
@@ -231,26 +231,25 @@ class Mapper(Node):
                 if min_range <= dist_m <= max_range: 
                     dist_cell = dist_m // self.grid.resolution # m to cells 
                     angle_bl = idx_to_angle(i)
-                    if math.pi/4 < angle_bl < math.pi/2: 
-                        # print("    angle, ", angle_bl, "  \\ dist m, cell:", dist_m, dist_cell)
-                        
-                        x_bl = dist_cell * math.cos(angle_bl) 
-                        y_bl = dist_cell * math.sin(angle_bl)
-                        detectedloc_bl_cell = (x_bl, y_bl) # rel to bl
-                        detectedloc_bl_m = self.cell_to_m(detectedloc_bl_cell[0], detectedloc_bl_cell[1])
+                    print("    angle, ", angle_bl, "  \\ dist m, cell:", dist_m, dist_cell)
+                    
+                    x_bl = dist_cell * math.cos(angle_bl) 
+                    y_bl = dist_cell * math.sin(angle_bl)
+                    detectedloc_bl_cell = (x_bl, y_bl) # rel to bl
+                    detectedloc_bl_m = self.cell_to_m(detectedloc_bl_cell[0], detectedloc_bl_cell[1])
 
-                        detectedloc_odom_m, _ = self.convert_bl_to_odom_loc(detectedloc_bl_m)
-                        detectedloc_odom_cell = self.m_to_cell(detectedloc_odom_m[0], detectedloc_odom_m[1])
-                        # print("    detected loc m odom ", detectedloc_odom_m, " , cell odom", detectedloc_odom_cell)
+                    detectedloc_odom_m, _ = self.convert_bl_to_odom_loc(detectedloc_bl_m)
+                    detectedloc_odom_cell = self.m_to_cell(detectedloc_odom_m[0], detectedloc_odom_m[1])
+                    print("    detected loc m odom ", detectedloc_odom_m, " , cell odom", detectedloc_odom_cell)
 
-                        # print("    ", loc_at_measurement_odom_cell, "  -->  ", detectedloc_odom_cell)
-                        oneangle_pts_to_val = self.bresenham(loc_at_measurement_odom_cell, detectedloc_odom_cell, hit_obst)
-                        pts_to_val.update(oneangle_pts_to_val)
+                    print("    ", loc_at_measurement_odom_cell, "  -->  ", detectedloc_odom_cell)
+                    oneangle_pts_to_val = self.bresenham(loc_at_measurement_odom_cell, detectedloc_odom_cell, hit_obst)
+                    pts_to_val.update(oneangle_pts_to_val)
 
-                        if i == 0 or i == 400 or i == 800 or i == 1200: 
-                            print("       angle: ", angle_bl)
-                            print("       [m] dist, odom", dist_m, detectedloc_odom_m)
-                            print("       [cell] dist, bl, odom", dist_cell, detectedloc_bl_cell, detectedloc_odom_cell, "\n")
+                    if i == 0 or i == 400 or i == 800 or i == 1200: 
+                        print("       angle: ", angle_bl)
+                        print("       [m] dist, odom", dist_m, detectedloc_odom_m)
+                        print("       [cell] dist, bl, odom", dist_cell, detectedloc_bl_cell, detectedloc_odom_cell, "\n")
             return pts_to_val
         
         def update_griddata(cells_odom_to_val): 
@@ -311,7 +310,7 @@ class Mapper(Node):
 
             return data, width, height, origin_new_odom_m 
                 
-        def publish_updated_grid(ddata, width, height, origin_new_odom_m): 
+        def publish_updated_grid(data, width, height, origin_new_odom_m): 
             print("  publishing updated grid")
             
             # create new occupancy grid msg 
@@ -339,14 +338,15 @@ class Mapper(Node):
 
         pts_to_val = process_sensor_data(ranges, measure_loc_odom_m, min_range, max_range)
 
-        left = min(pts_to_val.keys(), key=lambda k: k[0])
-        right = max(pts_to_val.keys(), key=lambda k: k[0])
-        top = max(pts_to_val.keys(), key=lambda k: k[1])
-        bottom = min(pts_to_val.keys(), key=lambda k: k[1])
-        print("    sensor readings left, right, top, bottom bounds:  ", left, right, top, bottom)
+        if pts_to_val: 
+            left = min(pts_to_val.keys(), key=lambda k: k[0])
+            right = max(pts_to_val.keys(), key=lambda k: k[0])
+            top = max(pts_to_val.keys(), key=lambda k: k[1])
+            bottom = min(pts_to_val.keys(), key=lambda k: k[1])
+            print("    sensor readings left, right, top, bottom bounds:  ", left, right, top, bottom)
 
-        data, width, height, origin_new_odom_m = update_griddata(pts_to_val)
-        publish_updated_grid(data, width, height, origin_new_odom_m)
+            data, width, height, origin_new_odom_m = update_griddata(pts_to_val)
+            publish_updated_grid(data, width, height, origin_new_odom_m)
     
     def _laser_callback(self, laserscan_msg): 
         print("[LASER CALLBACK]")
@@ -374,8 +374,8 @@ class Mapper(Node):
         og_msg.header.frame_id = self.map_frame_id
 
         # metadata 
-        og_msg.info.width = 100 # cells 
-        og_msg.info.height = 200 # cells 
+        og_msg.info.width = INITIAL_SIZE # cells 
+        og_msg.info.height = INITIAL_SIZE # cells 
         og_msg.info.resolution =  RESOLUTION # m/cell 
 
         # origin = odom rf origin 
