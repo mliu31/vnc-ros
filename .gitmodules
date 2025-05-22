@@ -1,0 +1,6 @@
+build
+install
+log
+[submodule "workspace/src/cs81-finalproj"]
+	path = workspace/src/cs81-finalproj
+	url = https://github.com/mihirBSingh/COSC81-Final-Project.git
